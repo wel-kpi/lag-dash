@@ -703,7 +703,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "3.7.0";
+  const APP_VERSION = "3.7.1";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -2217,7 +2217,9 @@
       for (let c=2;c<=LTV_EXPLICIT_CYCLES;c++) cycleColsEp.push(String(c));
       cycleColsEp.push('rest');
 
-      document.getElementById('ltvExtraProductsArea').innerHTML = list.map(ep=>`
+      document.getElementById('ltvExtraProductsArea').innerHTML = list.map(ep=>{
+        const matchedCount = ep.productCode ? loadRecords().filter(r=>r.month===ltvSelectedMonth && r.code && r.code.includes(ep.productCode)).length : 0;
+        return `
         <div class="panel" style="background:var(--bg-panel-2);margin-bottom:12px;" data-ep-id="${escapeHtml(ep.id)}">
           <div class="controls">
             <label>商品コード <input type="text" class="ep-code" data-id="${escapeHtml(ep.id)}" value="${escapeHtml(ep.productCode||'')}" style="width:140px;" placeholder="例: lagnet00002"></label>
@@ -2225,6 +2227,12 @@
             <label>初期件数 <input type="number" class="ep-count" data-id="${escapeHtml(ep.id)}" value="${ep.initialCount||0}" style="width:90px;"></label>
             <button class="btn small danger ep-del" data-id="${escapeHtml(ep.id)}">削除</button>
           </div>
+          ${ep.productCode ? `
+          <div class="controls" style="margin-top:0;">
+            <span class="n">受注CSV「${escapeHtml(ltvSelectedMonth)}」でこの商品コードを含む件数：${fmtNum(matchedCount)}件</span>
+            <button class="btn small ep-usematched" data-id="${escapeHtml(ep.id)}" data-count="${matchedCount}">この件数を初期件数に使う</button>
+          </div>
+          ` : ''}
           <div class="controls">
             <label>単価(初回) <input type="number" class="ep-field" data-id="${escapeHtml(ep.id)}" data-key="priceFirst" value="${ep.priceFirst||0}" style="width:90px;"></label>
             <label>単価(継続) <input type="number" class="ep-field" data-id="${escapeHtml(ep.id)}" data-key="priceRepeat" value="${ep.priceRepeat||0}" style="width:90px;"></label>
@@ -2239,7 +2247,7 @@
             </table>
           </div>
         </div>
-      `).join('') || '<div class="empty-note">まだ追加商品は登録されていません</div>';
+      `;}).join('') || '<div class="empty-note">まだ追加商品は登録されていません</div>';
 
       function commitEp(id, patch){
         const all = loadLtvSettings();
@@ -2289,6 +2297,12 @@
         }
         inp.addEventListener('input', ()=>{ clearTimeout(t); t=setTimeout(commit,500); });
         inp.addEventListener('change', ()=>{ clearTimeout(t); commit(); });
+      });
+      document.querySelectorAll('.ep-usematched').forEach(btn=>{
+        btn.addEventListener('click', ()=>{
+          commitEp(btn.dataset.id, { initialCount: Number(btn.dataset.count)||0 });
+          renderLtvTab();
+        });
       });
       document.querySelectorAll('.ep-del').forEach(btn=>{
         btn.addEventListener('click', ()=>{
