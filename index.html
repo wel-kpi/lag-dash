@@ -152,7 +152,11 @@
 
   /* 収益シミュレーションの2年間シミュレーション表: 列ぞろえを中央寄せに統一し、
      薄い縦線で列の区切りを分かりやすくする */
-  #ltvCycleTable th, #ltvCycleTable td{ text-align:center !important; border-right:1px solid var(--border); }
+  /* 収益シミュレーションの2年間シミュレーション表: 見出しは中央寄せ、数値セルは
+     右寄せ＋余白を持たせ、薄い縦線で列の区切りを分かりやすくする */
+  #ltvCycleTable th{ text-align:center !important; border-right:1px solid var(--border); }
+  #ltvCycleTable td{ text-align:right !important; padding-right:16px; border-right:1px solid var(--border); }
+  #ltvCycleTable td:first-child{ text-align:center !important; padding-right:10px; }
   #ltvCycleTable th:last-child, #ltvCycleTable td:last-child{ border-right:none; }
 
   .controls{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:16px;}
@@ -531,6 +535,9 @@
     <div class="panel">
       <h2>2年間シミュレーション<span class="n">（表示するシナリオを選択）</span></h2>
       <div class="cat-tabs" id="ltvScenarioTabs"></div>
+      <div class="controls" style="margin-bottom:8px;">
+        <button class="btn small" id="ltvRetentionResetAllBtn">継続率を読み込んだ値に戻す（このセルすべて）</button>
+      </div>
       <div class="table-wrap"><table class="data" id="ltvCycleTable"></table></div>
     </div>
 
@@ -742,7 +749,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "3.13.0";
+  const APP_VERSION = "3.14.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -2174,6 +2181,7 @@
     // 継続率セルが1つの回数だけを表す場合（通常はこちら）は直接編集できるようにする。
     // 複数の回数が同じ月に重なる場合（お届け間隔が短い等）は編集対象が曖昧になるため
     // 参考表示のみに留める。
+    const currentRenderRetentionKeys = []; // collected while rendering, used by the single "reset all" button below
     function retentionCellHtml(rates, type){
       if (!rates.length) return `<td class="num">—</td>`;
       if (rates.length > 1){
@@ -2184,10 +2192,9 @@
       const cycleKey = cycle <= LTV_EXPLICIT_CYCLES ? String(cycle) : 'rest';
       const originalKey = [ltvSelectedCategory, ltvSelectedMonth, ltvSelectedOffer||'', type, cycleKey].join('|');
       if (!(originalKey in ltvRetentionSessionOriginals)) ltvRetentionSessionOriginals[originalKey] = pct;
-      const originalPct = ltvRetentionSessionOriginals[originalKey];
-      return `<td class="num" style="white-space:nowrap;">
-        <input type="number" class="ltv-inline-retention" data-type="${type}" data-cycle="${cycleKey}" value="${pct}" style="width:44px;text-align:center;">%
-        <button type="button" class="ltv-inline-retention-reset" data-type="${type}" data-cycle="${cycleKey}" data-original="${originalPct}" title="読み込んだ値に戻す" style="background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:12px;padding:0 2px;vertical-align:middle;">↺</button>
+      currentRenderRetentionKeys.push({ type, cycleKey, original: ltvRetentionSessionOriginals[originalKey] });
+      return `<td class="num" style="padding-right:16px;">
+        <input type="number" class="ltv-inline-retention" data-type="${type}" data-cycle="${cycleKey}" value="${pct}" style="width:44px;text-align:right;">%
       </td>`;
     }
 
@@ -2264,12 +2271,15 @@
       inp.addEventListener('input', ()=>{ clearTimeout(t); t=setTimeout(commit, 600); });
       inp.addEventListener('change', ()=>{ clearTimeout(t); commit(); });
     });
-    document.querySelectorAll('.ltv-inline-retention-reset').forEach(btn=>{
-      btn.addEventListener('click', ()=>{
-        commitInlineRetention(btn.dataset.type, btn.dataset.cycle, Number(btn.dataset.original));
+    const retentionResetAllBtn = document.getElementById('ltvRetentionResetAllBtn');
+    if (retentionResetAllBtn){
+      retentionResetAllBtn.addEventListener('click', ()=>{
+        currentRenderRetentionKeys.forEach(k=>{
+          commitInlineRetention(k.type, k.cycleKey, k.original);
+        });
         renderLtvTab();
       });
-    });
+    }
 
     // ---- per-category settings only make sense for a single selected 商材 ----
     if (!ltvSelectedCategory){
@@ -4076,7 +4086,7 @@
         category: ltvSelectedCategory || '',
         offer: '',
         type: 'front',
-        selectedCycles: null, // populated once cycles are known, in renderRetentionImportPreview
+        checkedCells: null, // populated once cells are known, in renderRetentionImportPreview — Set of "month|cycle"
         editedValues: {}
       };
       renderRetentionImportPreview();
@@ -4100,7 +4110,10 @@
     const allCycles = Array.from(cycleSet).sort((a,b)=>{
       if (a==='rest') return 1; if (b==='rest') return -1; return Number(a)-Number(b);
     });
-    if (!state.selectedCycles) state.selectedCycles = new Set(allCycles); // default: all checked
+    if (!state.checkedCells){
+      state.checkedCells = new Set();
+      months.forEach(mo=>allCycles.forEach(c=>{ if (state.parsed[mo][c]!=null) state.checkedCells.add(mo+'|'+c); }));
+    }
     const latestMonth = months[months.length-1];
 
     function effectiveVal(mo, c){
@@ -4127,7 +4140,7 @@
         <button class="btn small" id="riPredictLatestBtn">最新月（${escapeHtml(latestMonth)}）を過去の平均で置き換える</button>
         <span class="n">当月はまだ2回目以降が出荷されていないことが多く、そのまま反映すると低い継続率になってしまう場合に使ってください。</span>
       </div>
-      <div style="font-size:11px;color:var(--text-dim);margin-top:6px;">反映したい回数（列）だけチェックしてください。例：2回目のデータだけ更新したい場合は2回目だけチェック。</div>
+      <div style="font-size:11px;color:var(--text-dim);margin-top:6px;">各セルのチェックを外すと、その年月・その回数だけ反映対象から外せます（例：2026年6月の2回目だけ反映したい、など）。</div>
       <div class="table-wrap">
         <table class="data">
           <thead>
@@ -4135,24 +4148,25 @@
               <th>年月</th>
               ${allCycles.map(c=>`<th class="num">${c==='rest'?`${LTV_EXPLICIT_CYCLES+1}回目以降`:c+'回目'}</th>`).join('')}
             </tr>
-            <tr>
-              <th style="text-align:left;color:var(--text-dim);font-size:10.5px;">反映する回数</th>
-              ${allCycles.map(c=>`<th class="num"><input type="checkbox" class="ri-cycle-check" data-cycle="${escapeHtml(c)}" ${state.selectedCycles.has(c)?'checked':''}></th>`).join('')}
-            </tr>
           </thead>
           <tbody>${months.map(mo=>`
             <tr>
               <td style="text-align:left;">${mo}${mo===latestMonth?' <span class="n">(最新月)</span>':''}</td>
               ${allCycles.map(c=>{
                 const val = effectiveVal(mo, c);
-                return `<td class="num">${val!=null ? `<input type="number" class="ri-cell" data-month="${escapeHtml(mo)}" data-cycle="${escapeHtml(c)}" value="${val}" step="0.01" style="width:64px;text-align:right;">` : '—'}</td>`;
+                const cellKey = mo+'|'+c;
+                if (val==null) return '<td class="num">—</td>';
+                return `<td class="num" style="white-space:nowrap;">
+                  <input type="checkbox" class="ri-cell-check" data-cell="${escapeHtml(cellKey)}" ${state.checkedCells.has(cellKey)?'checked':''}>
+                  <input type="number" class="ri-cell" data-month="${escapeHtml(mo)}" data-cycle="${escapeHtml(c)}" value="${val}" step="0.01" style="width:56px;text-align:right;">
+                </td>`;
               }).join('')}
             </tr>
           `).join('')}</tbody>
         </table>
       </div>
       <div class="controls" style="margin-top:10px;">
-        <button class="btn primary" id="riApplyBtn">チェックした回数を収益シミュレーションに反映</button>
+        <button class="btn primary" id="riApplyBtn">チェックしたセルを収益シミュレーションに反映</button>
         <button class="btn" id="riCancelBtn">キャンセル</button>
       </div>
     `;
@@ -4160,10 +4174,10 @@
     document.getElementById('riCategory').addEventListener('change', (e)=>{ state.category = e.target.value; state.offer=''; renderRetentionImportPreview(); });
     document.getElementById('riOffer').addEventListener('change', (e)=>{ state.offer = e.target.value; });
     document.getElementById('riType').addEventListener('change', (e)=>{ state.type = e.target.value; });
-    document.querySelectorAll('.ri-cycle-check').forEach(cb=>{
+    document.querySelectorAll('.ri-cell-check').forEach(cb=>{
       cb.addEventListener('change', ()=>{
-        if (cb.checked) state.selectedCycles.add(cb.dataset.cycle);
-        else state.selectedCycles.delete(cb.dataset.cycle);
+        if (cb.checked) state.checkedCells.add(cb.dataset.cell);
+        else state.checkedCells.delete(cb.dataset.cell);
       });
     });
     document.querySelectorAll('.ri-cell').forEach(inp=>{
@@ -4187,7 +4201,7 @@
     });
     document.getElementById('riApplyBtn').addEventListener('click', ()=>{
       if (!state.category){ alert('商材を選択してください。'); return; }
-      if (!state.selectedCycles.size){ alert('反映する回数にチェックを入れてください。'); return; }
+      if (!state.checkedCells.size){ alert('反映するセルにチェックを入れてください。'); return; }
       const all = loadLtvSettings();
       if (!all[state.category]) all[state.category] = defaultLtvCategorySettings();
       if (!all[state.category].retentionByMonth) all[state.category].retentionByMonth = {};
@@ -4201,7 +4215,7 @@
         if (!normalized[offerKey]) normalized[offerKey] = { frontRetention:{}, upsellRetention:{} };
         if (!normalized[offerKey][field]) normalized[offerKey][field] = {};
         allCycles.forEach(c=>{
-          if (!state.selectedCycles.has(c)) return;
+          if (!state.checkedCells.has(mo+'|'+c)) return;
           const val = effectiveVal(mo, c);
           if (val != null) normalized[offerKey][field][c] = val/100;
         });
