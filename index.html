@@ -521,6 +521,12 @@
         <div id="ltvRetentionNote"></div>
         <div class="table-wrap"><table class="data" id="ltvRetentionTable"></table></div>
         <div id="ltvRetentionPasteArea"></div>
+
+        <h3 style="font-size:12.5px;color:var(--text-dim);margin:20px 0 10px;">追加商品（シークレットコースなど、移行後の商品コード別）<span style="font-weight:400;">— 売上に上乗せされます</span></h3>
+        <div id="ltvExtraProductsArea"></div>
+        <div class="controls" style="margin-top:8px;">
+          <button class="btn" id="ltvExtraProductAddBtn">＋ 追加商品を登録</button>
+        </div>
       </div>
     </div>
 
@@ -697,7 +703,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "3.6.1";
+  const APP_VERSION = "3.7.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -1588,7 +1594,17 @@
       retentionByMonth: {}, // { [獲得月]: { frontRetention:{...}, upsellRetention:{...} } } — 月別の上書き
       frontIntervals: [30],  // days between cycle1→2, 2→3, ... last value repeats (商材共通のデフォルト)
       upsellIntervals: [30],
-      offerIntervals: {}  // { [オファー名]: { frontIntervals:[...], upsellIntervals:[...] } } — オファー専用の上書き
+      offerIntervals: {},  // { [オファー名]: { frontIntervals:[...], upsellIntervals:[...] } } — オファー専用の上書き
+      extraProducts: []  // [{ id, productCode, label, initialCount, priceFirst, priceRepeat, cogsFirst, cogsRepeat, intervals:[30], retention:{} }]
+                          // シークレットコースなど、途中で移行した別商品コードの分を個別設定して売上に上乗せする
+    };
+  }
+  function defaultExtraProduct(){
+    return {
+      id: 'ep-'+Date.now()+'-'+Math.random().toString(36).slice(2,6),
+      productCode: '', label: '', initialCount: 0,
+      priceFirst: 0, priceRepeat: 0, cogsFirst: 0, cogsRepeat: 0,
+      intervals: [30], retention: {}
     };
   }
   // Resolves the front/upsell retention curve to use: a month-specific override
@@ -1712,6 +1728,17 @@
     return { cycleCount: cycle, days };
   }
 
+  // Converts an elapsed-day offset into a "ヶ月目" bucket number. Day 0 (the
+  // acquisition itself) is always month 1. Any later day is rounded UP to the
+  // next 30-day boundary (not floored) — this is a deliberate safety margin: a
+  // cycle occurring 20 days after acquisition still lands in month 2 rather
+  // than month 1, since real-world payment/credit delays mean it shouldn't be
+  // assumed to land within the same acquisition month.
+  function dayToMonthNumber(day){
+    if (day <= 0) return 1;
+    return Math.ceil(day / 30) + 1;
+  }
+
   function parseIntervalsInput(text){
     return String(text||'').split(/[,、\s]+/).map(s=>Number(s.trim())).filter(n=>!isNaN(n) && n>0);
   }
@@ -1733,35 +1760,56 @@
     const frontSchedule = cycleScheduleFor(intervals.frontIntervals);
     const upsellSchedule = cycleScheduleFor(intervals.upsellIntervals);
 
-    const monthMap = {}; // month -> { frontCount, upsellCount, revenue, cogs }
+    const monthMap = {}; // month -> { frontCount, upsellCount, extraCount, revenue, cogs, frontRates, upsellRates }
     function bucket(month){
-      if (!monthMap[month]) monthMap[month] = { frontCount:0, upsellCount:0, revenue:0, cogs:0 };
+      if (!monthMap[month]) monthMap[month] = { frontCount:0, upsellCount:0, extraCount:0, revenue:0, cogs:0, frontRates:[], upsellRates:[] };
       return monthMap[month];
     }
 
     let frontCount = initialFront;
     for (let cycle = 1; cycle <= frontSchedule.cycleCount; cycle++){
-      if (cycle > 1) frontCount = frontCount * retentionRateFor(retention.frontRetention, cycle);
-      const month = Math.floor(frontSchedule.days[cycle-1] / 30) + 1;
+      const rate = cycle > 1 ? retentionRateFor(retention.frontRetention, cycle) : 1;
+      if (cycle > 1) frontCount = frontCount * rate;
+      const month = dayToMonthNumber(frontSchedule.days[cycle-1]);
       const price = cycle === 1 ? s.frontPriceFirst : s.frontPriceRepeat;
       const cogsUnit = cycle === 1 ? s.frontCogsFirst : s.frontCogsRepeat;
       const b = bucket(month);
       b.frontCount += frontCount;
       b.revenue += frontCount * price;
       b.cogs += frontCount * cogsUnit;
+      if (cycle > 1) b.frontRates.push(rate);
     }
 
     let upsellCount = initialUpsell;
     for (let cycle = 1; cycle <= upsellSchedule.cycleCount; cycle++){
-      if (cycle > 1) upsellCount = upsellCount * retentionRateFor(retention.upsellRetention, cycle);
-      const month = Math.floor(upsellSchedule.days[cycle-1] / 30) + 1;
+      const rate = cycle > 1 ? retentionRateFor(retention.upsellRetention, cycle) : 1;
+      if (cycle > 1) upsellCount = upsellCount * rate;
+      const month = dayToMonthNumber(upsellSchedule.days[cycle-1]);
       const price = cycle === 1 ? s.upsellPriceFirst : s.upsellPriceRepeat;
       const cogsUnit = cycle === 1 ? s.upsellCogsFirst : s.upsellCogsRepeat;
       const b = bucket(month);
       b.upsellCount += upsellCount;
       b.revenue += upsellCount * price;
       b.cogs += upsellCount * cogsUnit;
+      if (cycle > 1) b.upsellRates.push(rate);
     }
+
+    // 追加商品（シークレットコースなど、途中で移行した別商品コードの分）を同じ月バケットに上乗せ
+    (s.extraProducts||[]).forEach(ep=>{
+      const epSchedule = cycleScheduleFor(ep.intervals && ep.intervals.length ? ep.intervals : [30]);
+      let epCount = Number(ep.initialCount)||0;
+      for (let cycle = 1; cycle <= epSchedule.cycleCount; cycle++){
+        if (cycle > 1) epCount = epCount * retentionRateFor(ep.retention||{}, cycle);
+        if (epCount <= 0) break;
+        const month = dayToMonthNumber(epSchedule.days[cycle-1]);
+        const price = cycle === 1 ? ep.priceFirst : ep.priceRepeat;
+        const cogsUnit = cycle === 1 ? ep.cogsFirst : ep.cogsRepeat;
+        const b = bucket(month);
+        b.extraCount += epCount;
+        b.revenue += epCount * (Number(price)||0);
+        b.cogs += epCount * (Number(cogsUnit)||0);
+      }
+    });
 
     const maxMonth = Math.max(1, ...Object.keys(monthMap).map(Number));
     const rows = [];
@@ -1769,8 +1817,8 @@
     const oneTimeCostTotal = (g.oneTimeCostItems||[]).reduce((sum,item)=>sum + (Number(item.unitCost)||0), 0);
 
     for (let month = 1; month <= maxMonth; month++){
-      const b = monthMap[month] || { frontCount:0, upsellCount:0, revenue:0, cogs:0 };
-      const orders = b.frontCount + b.upsellCount;
+      const b = monthMap[month] || { frontCount:0, upsellCount:0, extraCount:0, revenue:0, cogs:0, frontRates:[], upsellRates:[] };
+      const orders = b.frontCount + b.upsellCount + b.extraCount;
       const fee = b.revenue * (Number(g.paymentFeeRate)||0);
       const loss = b.revenue * (Number(g.lossRate)||0);
       const fixedCost = (g.fixedCostItems||[]).reduce((sum,item)=>sum + (Number(item.unitCost)||0)*orders, 0);
@@ -1779,7 +1827,7 @@
       const otherCost = fee + loss + fixedCost + oneTimeCost;
       const profit = b.revenue - b.cogs - adCost - otherCost;
 
-      rows.push({ month, frontCount:b.frontCount, upsellCount:b.upsellCount, orders, revenue:b.revenue, cogs:b.cogs, adCost, otherCost, profit });
+      rows.push({ month, frontCount:b.frontCount, upsellCount:b.upsellCount, extraCount:b.extraCount, orders, revenue:b.revenue, cogs:b.cogs, adCost, otherCost, profit, frontRates:b.frontRates, upsellRates:b.upsellRates });
       totalOrders += orders;
       totalRevenue += b.revenue;
       totalCogs += b.cogs;
@@ -1816,14 +1864,14 @@
     const rows = [];
     let totalOrders=0, totalRevenue=0, totalCogs=0, totalAdCost=0, totalOtherCost=0;
     for (let month=1; month<=maxMonth; month++){
-      let frontCount=0, upsellCount=0, revenue=0, cogs=0, adCost=0, otherCost=0;
+      let frontCount=0, upsellCount=0, extraCount=0, revenue=0, cogs=0, adCost=0, otherCost=0;
       sims.forEach(s=>{
         const r = s.rows[month-1];
-        if (r){ frontCount+=r.frontCount; upsellCount+=r.upsellCount; revenue+=r.revenue; cogs+=r.cogs; adCost+=r.adCost; otherCost+=r.otherCost; }
+        if (r){ frontCount+=r.frontCount; upsellCount+=r.upsellCount; extraCount+=(r.extraCount||0); revenue+=r.revenue; cogs+=r.cogs; adCost+=r.adCost; otherCost+=r.otherCost; }
       });
-      const orders = frontCount+upsellCount;
+      const orders = frontCount+upsellCount+extraCount;
       const profit = revenue-cogs-adCost-otherCost;
-      rows.push({ month, frontCount, upsellCount, orders, revenue, cogs, adCost, otherCost, profit });
+      rows.push({ month, frontCount, upsellCount, extraCount, orders, revenue, cogs, adCost, otherCost, profit, frontRates:[], upsellRates:[] });
       totalOrders+=orders; totalRevenue+=revenue; totalCogs+=cogs; totalAdCost+=adCost; totalOtherCost+=otherCost;
     }
     const totalProfit = totalRevenue-totalCogs-totalAdCost-totalOtherCost;
@@ -1967,35 +2015,41 @@
       btn.addEventListener('click', ()=>{ ltvSelectedScenario = btn.dataset.scenario; renderLtvTab(); });
     });
     const activeSim = ltvSelectedScenario === 'landing' ? landingSim : progressSim;
+    const hasExtraProducts = (getLtvCategorySettings(ltvSelectedCategory||targetCategories[0]||'').extraProducts||[]).length > 0;
     document.getElementById('ltvCycleTable').innerHTML = `
-      <thead><tr><th>ヶ月目</th><th class="num">フロント件数</th><th class="num">アップセル件数</th><th class="num">合計件数</th><th class="num">売上</th><th class="num">原価</th><th class="num">広告費</th><th class="num">その他コスト</th><th class="num">利益</th><th class="num">利益率</th></tr></thead>
+      <thead><tr><th>ヶ月目</th><th class="num">フロント件数</th><th class="num">フロント継続率</th><th class="num">アップセル件数</th><th class="num">アップセル継続率</th>${hasExtraProducts?'<th class="num">追加商品件数</th>':''}<th class="num">合計件数</th><th class="num">売上</th><th class="num">原価</th><th class="num">広告費</th><th class="num">その他コスト</th><th class="num">利益</th></tr></thead>
       <tbody>${activeSim.rows.map(r=>{
-        const rowProfitRate = r.revenue>0 ? (r.profit/r.revenue*100) : NaN;
+        const frontRateStr = r.frontRates.length ? r.frontRates.map(x=>(x*100).toFixed(0)+'%').join(', ') : '—';
+        const upsellRateStr = r.upsellRates.length ? r.upsellRates.map(x=>(x*100).toFixed(0)+'%').join(', ') : '—';
         return `
         <tr>
           <td>${r.month}ヶ月目</td>
           <td class="num">${r.frontCount>0?fmtNum(Math.round(r.frontCount)):'—'}</td>
+          <td class="num">${frontRateStr}</td>
           <td class="num">${r.upsellCount>0?fmtNum(Math.round(r.upsellCount)):'—'}</td>
+          <td class="num">${upsellRateStr}</td>
+          ${hasExtraProducts?`<td class="num">${r.extraCount>0?fmtNum(Math.round(r.extraCount)):'—'}</td>`:''}
           <td class="num">${fmtNum(Math.round(r.orders))}</td>
           <td class="num">${fmtYen(r.revenue)}</td>
           <td class="num">${fmtYen(r.cogs)}</td>
           <td class="num">${r.adCost>0?fmtYen(r.adCost):'—'}</td>
           <td class="num">${fmtYen(r.otherCost)}</td>
           <td class="num" style="color:${r.profit>=0?'var(--good)':'var(--danger)'};">${fmtYen(r.profit)}</td>
-          <td class="num">${isFinite(rowProfitRate)?rowProfitRate.toFixed(1)+'%':'—'}</td>
         </tr>
       `;}).join('')}
       <tr class="total-row-top">
         <td>合計</td>
         <td class="num" style="text-align:right;">—</td>
         <td class="num" style="text-align:right;">—</td>
+        <td class="num" style="text-align:right;">—</td>
+        <td class="num" style="text-align:right;">—</td>
+        ${hasExtraProducts?'<td class="num" style="text-align:right;">—</td>':''}
         <td class="num" style="text-align:right;">${fmtNum(Math.round(activeSim.totalOrders))}</td>
         <td class="num" style="text-align:right;">${fmtYen(activeSim.totalRevenue)}</td>
         <td class="num" style="text-align:right;">${fmtYen(activeSim.totalCogs)}</td>
         <td class="num" style="text-align:right;">${fmtYen(activeSim.totalAdCost)}</td>
         <td class="num" style="text-align:right;">${fmtYen(activeSim.totalOtherCost)}</td>
-        <td class="num" style="text-align:right;">${fmtYen(activeSim.totalProfit)}</td>
-        <td class="num" style="text-align:right;">${activeSim.totalRevenue>0?(activeSim.totalProfit/activeSim.totalRevenue*100).toFixed(1)+'%':'—'}</td>
+        <td class="num" style="text-align:right;">${fmtYen(activeSim.totalProfit)}<span style="font-size:10.5px;color:var(--text-dim);"> （利益率 ${activeSim.totalRevenue>0?(activeSim.totalProfit/activeSim.totalRevenue*100).toFixed(1)+'%':'—'}）</span></td>
       </tr>
       </tbody>
     `;
@@ -2154,6 +2208,100 @@
     }
     document.getElementById('ltvPasteFrontBtn').addEventListener('click', ()=>applyRetentionPaste('front'));
     document.getElementById('ltvPasteUpsellBtn').addEventListener('click', ()=>applyRetentionPaste('upsell'));
+
+    // ---- 追加商品（シークレットコースなど、移行後の商品コード別に個別の継続率・単価・原価を設定） ----
+    function renderExtraProducts(){
+      const cur = getLtvCategorySettings(ltvSelectedCategory);
+      const list = cur.extraProducts || [];
+      const cycleColsEp = [];
+      for (let c=2;c<=LTV_EXPLICIT_CYCLES;c++) cycleColsEp.push(String(c));
+      cycleColsEp.push('rest');
+
+      document.getElementById('ltvExtraProductsArea').innerHTML = list.map(ep=>`
+        <div class="panel" style="background:var(--bg-panel-2);margin-bottom:12px;" data-ep-id="${escapeHtml(ep.id)}">
+          <div class="controls">
+            <label>商品コード <input type="text" class="ep-code" data-id="${escapeHtml(ep.id)}" value="${escapeHtml(ep.productCode||'')}" style="width:140px;" placeholder="例: lagnet00002"></label>
+            <label>ラベル(任意) <input type="text" class="ep-label" data-id="${escapeHtml(ep.id)}" value="${escapeHtml(ep.label||'')}" style="width:160px;" placeholder="例: シークレットコース"></label>
+            <label>初期件数 <input type="number" class="ep-count" data-id="${escapeHtml(ep.id)}" value="${ep.initialCount||0}" style="width:90px;"></label>
+            <button class="btn small danger ep-del" data-id="${escapeHtml(ep.id)}">削除</button>
+          </div>
+          <div class="controls">
+            <label>単価(初回) <input type="number" class="ep-field" data-id="${escapeHtml(ep.id)}" data-key="priceFirst" value="${ep.priceFirst||0}" style="width:90px;"></label>
+            <label>単価(継続) <input type="number" class="ep-field" data-id="${escapeHtml(ep.id)}" data-key="priceRepeat" value="${ep.priceRepeat||0}" style="width:90px;"></label>
+            <label>原価(初回) <input type="number" class="ep-field" data-id="${escapeHtml(ep.id)}" data-key="cogsFirst" value="${ep.cogsFirst||0}" style="width:90px;"></label>
+            <label>原価(継続) <input type="number" class="ep-field" data-id="${escapeHtml(ep.id)}" data-key="cogsRepeat" value="${ep.cogsRepeat||0}" style="width:90px;"></label>
+            <label>お届け間隔(日) <input type="text" class="ep-intervals" data-id="${escapeHtml(ep.id)}" value="${(ep.intervals||[30]).join(',')}" style="width:100px;"></label>
+          </div>
+          <div class="table-wrap">
+            <table class="data">
+              <thead><tr><th>継続率</th>${cycleColsEp.map(c=>`<th class="num">${c==='rest'?`${LTV_EXPLICIT_CYCLES+1}回目以降`:c+'回目'}</th>`).join('')}</tr></thead>
+              <tbody><tr><td style="text-align:left;">%</td>${cycleColsEp.map(c=>`<td class="num"><input type="number" class="ep-retention" data-id="${escapeHtml(ep.id)}" data-cycle="${c}" value="${(ep.retention&&ep.retention[c]!=null?(ep.retention[c]*100).toFixed(0):'')}" placeholder="%" style="width:52px;text-align:right;"></td>`).join('')}</tr></tbody>
+            </table>
+          </div>
+        </div>
+      `).join('') || '<div class="empty-note">まだ追加商品は登録されていません</div>';
+
+      function commitEp(id, patch){
+        const all = loadLtvSettings();
+        if (!all[ltvSelectedCategory]) all[ltvSelectedCategory] = defaultLtvCategorySettings();
+        const arr = all[ltvSelectedCategory].extraProducts || [];
+        const item = arr.find(x=>x.id===id);
+        if (item) Object.assign(item, patch);
+        all[ltvSelectedCategory].extraProducts = arr;
+        saveLtvSettings(all);
+      }
+      document.querySelectorAll('.ep-code').forEach(inp=>{
+        inp.addEventListener('change', ()=>{ commitEp(inp.dataset.id, { productCode: inp.value.trim() }); renderLtvTab(); });
+      });
+      document.querySelectorAll('.ep-label').forEach(inp=>{
+        inp.addEventListener('change', ()=>{ commitEp(inp.dataset.id, { label: inp.value.trim() }); });
+      });
+      document.querySelectorAll('.ep-count').forEach(inp=>{
+        let t=null;
+        function commit(){ commitEp(inp.dataset.id, { initialCount: Number(inp.value)||0 }); renderLtvTab(); }
+        inp.addEventListener('input', ()=>{ clearTimeout(t); t=setTimeout(commit,500); });
+        inp.addEventListener('change', ()=>{ clearTimeout(t); commit(); });
+      });
+      document.querySelectorAll('.ep-field').forEach(inp=>{
+        let t=null;
+        function commit(){ commitEp(inp.dataset.id, { [inp.dataset.key]: Number(inp.value)||0 }); renderLtvTab(); }
+        inp.addEventListener('input', ()=>{ clearTimeout(t); t=setTimeout(commit,500); });
+        inp.addEventListener('change', ()=>{ clearTimeout(t); commit(); });
+      });
+      document.querySelectorAll('.ep-intervals').forEach(inp=>{
+        inp.addEventListener('change', ()=>{ commitEp(inp.dataset.id, { intervals: parseIntervalsInput(inp.value) }); renderLtvTab(); });
+      });
+      document.querySelectorAll('.ep-retention').forEach(inp=>{
+        let t=null;
+        function commit(){
+          const all = loadLtvSettings();
+          if (!all[ltvSelectedCategory]) all[ltvSelectedCategory] = defaultLtvCategorySettings();
+          const arr = all[ltvSelectedCategory].extraProducts || [];
+          const item = arr.find(x=>x.id===inp.dataset.id);
+          if (item){
+            if (!item.retention) item.retention = {};
+            const pctVal = Number(inp.value);
+            item.retention[inp.dataset.cycle] = isNaN(pctVal) ? 0 : pctVal/100;
+          }
+          all[ltvSelectedCategory].extraProducts = arr;
+          saveLtvSettings(all);
+          renderLtvTab();
+        }
+        inp.addEventListener('input', ()=>{ clearTimeout(t); t=setTimeout(commit,500); });
+        inp.addEventListener('change', ()=>{ clearTimeout(t); commit(); });
+      });
+      document.querySelectorAll('.ep-del').forEach(btn=>{
+        btn.addEventListener('click', ()=>{
+          const all = loadLtvSettings();
+          if (all[ltvSelectedCategory] && all[ltvSelectedCategory].extraProducts){
+            all[ltvSelectedCategory].extraProducts = all[ltvSelectedCategory].extraProducts.filter(x=>x.id!==btn.dataset.id);
+            saveLtvSettings(all);
+            renderLtvTab();
+          }
+        });
+      });
+    }
+    renderExtraProducts();
 
     // ---- delivery interval settings (お届け頻度) — オファーを選択中ならオファー専用の
     // 上書き設定、「すべて」選択中は商材共通のデフォルト値を編集する ----
@@ -3945,6 +4093,15 @@
     if (!g.oneTimeCostItems) g.oneTimeCostItems = [];
     g.oneTimeCostItems.push({ id: 'otc-'+Date.now()+'-'+Math.random().toString(36).slice(2,6), name:'新規項目', unitCost:0 });
     saveLtvGlobal(g);
+    renderLtvTab();
+  });
+  document.getElementById('ltvExtraProductAddBtn').addEventListener('click', ()=>{
+    if (!ltvSelectedCategory){ alert('商材タブで個別の商材を選択してください。'); return; }
+    const all = loadLtvSettings();
+    if (!all[ltvSelectedCategory]) all[ltvSelectedCategory] = defaultLtvCategorySettings();
+    if (!all[ltvSelectedCategory].extraProducts) all[ltvSelectedCategory].extraProducts = [];
+    all[ltvSelectedCategory].extraProducts.push(defaultExtraProduct());
+    saveLtvSettings(all);
     renderLtvTab();
   });
   document.getElementById('mediaReportCopyBtn').addEventListener('click', ()=>copyTextareaToClipboard('mediaReportTextArea','mediaReportCopyStatus'));
