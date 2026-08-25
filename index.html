@@ -150,6 +150,11 @@
 
   .table-wrap{overflow-x:auto;}
 
+  /* 収益シミュレーションの2年間シミュレーション表: 列ぞろえを中央寄せに統一し、
+     薄い縦線で列の区切りを分かりやすくする */
+  #ltvCycleTable th, #ltvCycleTable td{ text-align:center !important; border-right:1px solid var(--border); }
+  #ltvCycleTable th:last-child, #ltvCycleTable td:last-child{ border-right:none; }
+
   .controls{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:16px;}
   .controls label{font-size:12px;color:var(--text-dim);display:flex;align-items:center;gap:6px;}
   select, input[type=date], input[type=number], input[type=text]{
@@ -271,6 +276,13 @@
   .pie-legend-swatch{width:12px;height:12px;border-radius:3px;flex:none;}
   .pie-legend-label{flex:1;color:var(--text);}
   .pie-legend-value{font-family:var(--data-font);font-variant-numeric:tabular-nums;color:var(--text-dim);}
+
+  /* ---------- number inputs: hide spinner arrows everywhere (scroll-wheel over
+     a focused number input silently changes its value, and the arrows invite
+     accidental clicks) ---------- */
+  input[type=number]::-webkit-inner-spin-button,
+  input[type=number]::-webkit-outer-spin-button{ -webkit-appearance:none; margin:0; }
+  input[type=number]{ -moz-appearance:textfield; appearance:textfield; }
 </style>
 </head>
 <body>
@@ -730,7 +742,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "3.12.0";
+  const APP_VERSION = "3.13.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -1397,6 +1409,7 @@
   let reportPeriodKey = 'thismonth';
   let trendPeriodKey = 'thismonth';
   let ltvSelectedCategory = null; // null = not yet initialized (defaults to first category); '' = explicitly "すべて" (all categories combined)
+  const ltvRetentionSessionOriginals = {}; // first-value-wins cache so the inline "戻す" button always reverts to what was loaded at the start of this session, not just the last render
   let ltvSelectedMonth = null; // acquisition month being simulated; null = current month
   let ltvSelectedScenario = 'progress';
   let ltvSelectedOffer = '';
@@ -1825,7 +1838,7 @@
       b.frontCount += frontCount;
       b.revenue += frontCount * price;
       b.cogs += frontCount * cogsUnit;
-      if (cycle > 1) b.frontRates.push(rate);
+      if (cycle > 1) b.frontRates.push({ rate, cycle });
     }
 
     let upsellCount = initialUpsell;
@@ -1839,7 +1852,7 @@
       b.upsellCount += upsellCount;
       b.revenue += upsellCount * price;
       b.cogs += upsellCount * cogsUnit;
-      if (cycle > 1) b.upsellRates.push(rate);
+      if (cycle > 1) b.upsellRates.push({ rate, cycle });
     }
 
     // 追加商品（シークレットコースなど、途中で移行した別商品コードの分）を同じ月バケットに上乗せ
@@ -2116,28 +2129,6 @@
     const activeSim = ltvSelectedScenario === 'landing' ? landingSim : progressSim;
     const hasExtraProducts = (getLtvCategorySettings(ltvSelectedCategory||targetCategories[0]||'').extraProducts||[]).length > 0;
 
-    function costCellHtml(rowKey, cost, cogs, fee, loss, fixedCost, oneTimeCost, adCostForNote){
-      return `
-        <td class="num">
-          <button type="button" class="ltv-cost-toggle" data-row="${rowKey}" style="background:none;border:none;color:var(--text);cursor:pointer;font:inherit;text-decoration:underline dotted;padding:0;">${fmtYen(cost)}</button>
-        </td>
-      `;
-    }
-    function costDetailRowHtml(rowKey, r, colspanBefore, colspanAfter){
-      return `
-        <tr class="ltv-cost-detail" data-row="${rowKey}" style="display:none;background:var(--bg-panel-2);">
-          <td colspan="${colspanBefore}"></td>
-          <td colspan="2" style="text-align:left;font-size:11.5px;color:var(--text-dim);line-height:1.9;">
-            原価：${fmtYen(r.cogs)}<br>
-            決済手数料：${fmtYen(r.fee)}<br>
-            ロス：${fmtYen(r.loss)}<br>
-            固定費目：${fmtYen(r.fixedCost)}${r.oneTimeCost>0?`<br>1回きりコスト：${fmtYen(r.oneTimeCost)}`:''}
-          </td>
-          <td colspan="${colspanAfter}"></td>
-        </tr>
-      `;
-    }
-
     // 件数(フロント/アップセル/追加商品/合計) と 継続率(フロント/アップセル) をそれぞれ
     // 2階層ヘッダーでまとめ、原価+その他コストは「コスト」1本にまとめてクリックで内訳表示。
     const countColCount = hasExtraProducts ? 4 : 3; // フロント/アップセル/(追加商品)/合計
@@ -2163,6 +2154,41 @@
           <td colspan="${colspanAfter}"></td>
         </tr>
       `;
+    }
+
+    function commitInlineRetention(type, cycleKey, pctValue){
+      const all = loadLtvSettings();
+      if (!all[ltvSelectedCategory]) all[ltvSelectedCategory] = defaultLtvCategorySettings();
+      if (!all[ltvSelectedCategory].retentionByMonth) all[ltvSelectedCategory].retentionByMonth = {};
+      const offerKey = ltvSelectedOffer || '';
+      const raw = all[ltvSelectedCategory].retentionByMonth[ltvSelectedMonth];
+      let normalized = normalizedMonthRetentionEntry(raw);
+      if (!normalized) normalized = {};
+      if (!normalized[offerKey]) normalized[offerKey] = { frontRetention:{}, upsellRetention:{} };
+      const field = type === 'front' ? 'frontRetention' : 'upsellRetention';
+      if (!normalized[offerKey][field]) normalized[offerKey][field] = {};
+      normalized[offerKey][field][cycleKey] = pctValue/100;
+      all[ltvSelectedCategory].retentionByMonth[ltvSelectedMonth] = normalized;
+      saveLtvSettings(all);
+    }
+    // 継続率セルが1つの回数だけを表す場合（通常はこちら）は直接編集できるようにする。
+    // 複数の回数が同じ月に重なる場合（お届け間隔が短い等）は編集対象が曖昧になるため
+    // 参考表示のみに留める。
+    function retentionCellHtml(rates, type){
+      if (!rates.length) return `<td class="num">—</td>`;
+      if (rates.length > 1){
+        return `<td class="num">${rates.map(x=>(x.rate*100).toFixed(0)+'%').join(', ')}</td>`;
+      }
+      const { rate, cycle } = rates[0];
+      const pct = Math.round(rate*100);
+      const cycleKey = cycle <= LTV_EXPLICIT_CYCLES ? String(cycle) : 'rest';
+      const originalKey = [ltvSelectedCategory, ltvSelectedMonth, ltvSelectedOffer||'', type, cycleKey].join('|');
+      if (!(originalKey in ltvRetentionSessionOriginals)) ltvRetentionSessionOriginals[originalKey] = pct;
+      const originalPct = ltvRetentionSessionOriginals[originalKey];
+      return `<td class="num" style="white-space:nowrap;">
+        <input type="number" class="ltv-inline-retention" data-type="${type}" data-cycle="${cycleKey}" value="${pct}" style="width:44px;text-align:center;">%
+        <button type="button" class="ltv-inline-retention-reset" data-type="${type}" data-cycle="${cycleKey}" data-original="${originalPct}" title="読み込んだ値に戻す" style="background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:12px;padding:0 2px;vertical-align:middle;">↺</button>
+      </td>`;
     }
 
     // 列順: ヶ月目 → フロント(件数・継続率) → アップセル(件数・継続率) → 追加商品件数
@@ -2202,8 +2228,6 @@
         <td class="num" style="text-align:right;background:var(--good-soft);font-weight:700;${moneyStyle(activeSim.totalProfit)}">${fmtYen(activeSim.totalProfit)}<span style="font-size:10.5px;color:var(--text-dim);font-weight:400;"> （利益率 ${activeSim.totalRevenue>0?(activeSim.totalProfit/activeSim.totalRevenue*100).toFixed(1)+'%':'—'}）</span></td>
       </tr>
       ${activeSim.rows.map((r,idx)=>{
-        const frontRateStr = r.frontRates.length ? r.frontRates.map(x=>(x*100).toFixed(0)+'%').join(', ') : '—';
-        const upsellRateStr = r.upsellRates.length ? r.upsellRates.map(x=>(x*100).toFixed(0)+'%').join(', ') : '—';
         const rowKey = 'm'+r.month+'-'+idx;
         const colspanBefore = 1 + 4 + (hasExtraProducts?1:0) + 1 + 1; // ヶ月目 + フロント2 + アップセル2 + (追加商品) + 合計件数 + 売上
         const colspanAfter = 1; // 利益
@@ -2211,9 +2235,9 @@
         <tr>
           <td>${r.month}ヶ月目</td>
           <td class="num">${r.frontCount>0?fmtNum(Math.round(r.frontCount)):'—'}</td>
-          <td class="num">${frontRateStr}</td>
+          ${retentionCellHtml(r.frontRates, 'front')}
           <td class="num">${r.upsellCount>0?fmtNum(Math.round(r.upsellCount)):'—'}</td>
-          <td class="num">${upsellRateStr}</td>
+          ${retentionCellHtml(r.upsellRates, 'upsell')}
           ${hasExtraProducts?`<td class="num">${r.extraCount>0?fmtNum(Math.round(r.extraCount)):'—'}</td>`:''}
           <td class="num">${fmtNum(Math.round(r.orders))}</td>
           <td class="num" style="background:var(--blue-soft);${moneyStyle(r.revenue)}">${fmtYen(r.revenue)}</td>
@@ -2228,6 +2252,22 @@
       btn.addEventListener('click', ()=>{
         const detailRow = document.querySelector(`.ltv-cost-detail[data-row="${btn.dataset.row}"]`);
         if (detailRow) detailRow.style.display = detailRow.style.display === 'none' ? '' : 'none';
+      });
+    });
+    document.querySelectorAll('.ltv-inline-retention').forEach(inp=>{
+      let t=null;
+      function commit(){
+        const v = Number(inp.value);
+        if (!isNaN(v)) commitInlineRetention(inp.dataset.type, inp.dataset.cycle, v);
+        renderLtvTab();
+      }
+      inp.addEventListener('input', ()=>{ clearTimeout(t); t=setTimeout(commit, 600); });
+      inp.addEventListener('change', ()=>{ clearTimeout(t); commit(); });
+    });
+    document.querySelectorAll('.ltv-inline-retention-reset').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        commitInlineRetention(btn.dataset.type, btn.dataset.cycle, Number(btn.dataset.original));
+        renderLtvTab();
       });
     });
 
@@ -4036,7 +4076,7 @@
         category: ltvSelectedCategory || '',
         offer: '',
         type: 'front',
-        selectedMonths: new Set(months),
+        selectedCycles: null, // populated once cycles are known, in renderRetentionImportPreview
         editedValues: {}
       };
       renderRetentionImportPreview();
@@ -4060,6 +4100,7 @@
     const allCycles = Array.from(cycleSet).sort((a,b)=>{
       if (a==='rest') return 1; if (b==='rest') return -1; return Number(a)-Number(b);
     });
+    if (!state.selectedCycles) state.selectedCycles = new Set(allCycles); // default: all checked
     const latestMonth = months[months.length-1];
 
     function effectiveVal(mo, c){
@@ -4086,16 +4127,21 @@
         <button class="btn small" id="riPredictLatestBtn">最新月（${escapeHtml(latestMonth)}）を過去の平均で置き換える</button>
         <span class="n">当月はまだ2回目以降が出荷されていないことが多く、そのまま反映すると低い継続率になってしまう場合に使ってください。</span>
       </div>
+      <div style="font-size:11px;color:var(--text-dim);margin-top:6px;">反映したい回数（列）だけチェックしてください。例：2回目のデータだけ更新したい場合は2回目だけチェック。</div>
       <div class="table-wrap">
         <table class="data">
-          <thead><tr>
-            <th><input type="checkbox" id="riCheckAll" checked></th>
-            <th>年月</th>
-            ${allCycles.map(c=>`<th class="num">${c==='rest'?`${LTV_EXPLICIT_CYCLES+1}回目以降`:c+'回目'}</th>`).join('')}
-          </tr></thead>
+          <thead>
+            <tr>
+              <th>年月</th>
+              ${allCycles.map(c=>`<th class="num">${c==='rest'?`${LTV_EXPLICIT_CYCLES+1}回目以降`:c+'回目'}</th>`).join('')}
+            </tr>
+            <tr>
+              <th style="text-align:left;color:var(--text-dim);font-size:10.5px;">反映する回数</th>
+              ${allCycles.map(c=>`<th class="num"><input type="checkbox" class="ri-cycle-check" data-cycle="${escapeHtml(c)}" ${state.selectedCycles.has(c)?'checked':''}></th>`).join('')}
+            </tr>
+          </thead>
           <tbody>${months.map(mo=>`
             <tr>
-              <td><input type="checkbox" class="ri-row-check" data-month="${mo}" ${state.selectedMonths.has(mo)?'checked':''}></td>
               <td style="text-align:left;">${mo}${mo===latestMonth?' <span class="n">(最新月)</span>':''}</td>
               ${allCycles.map(c=>{
                 const val = effectiveVal(mo, c);
@@ -4106,7 +4152,7 @@
         </table>
       </div>
       <div class="controls" style="margin-top:10px;">
-        <button class="btn primary" id="riApplyBtn">チェックした月を収益シミュレーションに反映</button>
+        <button class="btn primary" id="riApplyBtn">チェックした回数を収益シミュレーションに反映</button>
         <button class="btn" id="riCancelBtn">キャンセル</button>
       </div>
     `;
@@ -4114,17 +4160,10 @@
     document.getElementById('riCategory').addEventListener('change', (e)=>{ state.category = e.target.value; state.offer=''; renderRetentionImportPreview(); });
     document.getElementById('riOffer').addEventListener('change', (e)=>{ state.offer = e.target.value; });
     document.getElementById('riType').addEventListener('change', (e)=>{ state.type = e.target.value; });
-    document.getElementById('riCheckAll').addEventListener('change', (e)=>{
-      document.querySelectorAll('.ri-row-check').forEach(cb=>{
-        cb.checked = e.target.checked;
-        if (e.target.checked) state.selectedMonths.add(cb.dataset.month);
-        else state.selectedMonths.delete(cb.dataset.month);
-      });
-    });
-    document.querySelectorAll('.ri-row-check').forEach(cb=>{
+    document.querySelectorAll('.ri-cycle-check').forEach(cb=>{
       cb.addEventListener('change', ()=>{
-        if (cb.checked) state.selectedMonths.add(cb.dataset.month);
-        else state.selectedMonths.delete(cb.dataset.month);
+        if (cb.checked) state.selectedCycles.add(cb.dataset.cycle);
+        else state.selectedCycles.delete(cb.dataset.cycle);
       });
     });
     document.querySelectorAll('.ri-cell').forEach(inp=>{
@@ -4148,7 +4187,7 @@
     });
     document.getElementById('riApplyBtn').addEventListener('click', ()=>{
       if (!state.category){ alert('商材を選択してください。'); return; }
-      if (!state.selectedMonths.size){ alert('反映する年月にチェックを入れてください。'); return; }
+      if (!state.selectedCycles.size){ alert('反映する回数にチェックを入れてください。'); return; }
       const all = loadLtvSettings();
       if (!all[state.category]) all[state.category] = defaultLtvCategorySettings();
       if (!all[state.category].retentionByMonth) all[state.category].retentionByMonth = {};
@@ -4156,13 +4195,13 @@
       const offerKey = state.offer || '';
 
       months.forEach(mo=>{
-        if (!state.selectedMonths.has(mo)) return;
         const raw = all[state.category].retentionByMonth[mo];
         let normalized = normalizedMonthRetentionEntry(raw);
         if (!normalized) normalized = {};
         if (!normalized[offerKey]) normalized[offerKey] = { frontRetention:{}, upsellRetention:{} };
         if (!normalized[offerKey][field]) normalized[offerKey][field] = {};
         allCycles.forEach(c=>{
+          if (!state.selectedCycles.has(c)) return;
           const val = effectiveVal(mo, c);
           if (val != null) normalized[offerKey][field][c] = val/100;
         });
@@ -4585,6 +4624,13 @@
   document.getElementById('sumFrom').value = addDays(todayStr(), -29);
   document.getElementById('budgetDate').value = todayStr();
   document.getElementById('verLabel').textContent = 'v' + APP_VERSION;
+  // prevent accidental value changes when the mouse wheel passes over a
+  // focused number input (browsers change the value on scroll by default)
+  document.addEventListener('wheel', ()=>{
+    if (document.activeElement && document.activeElement.tagName==='INPUT' && document.activeElement.type==='number'){
+      document.activeElement.blur();
+    }
+  }, { passive:true });
   applyTheme(loadTheme());
   applyFont(loadFont());
   document.getElementById('themeToggleBtn').addEventListener('click', ()=>{
