@@ -123,6 +123,15 @@
   #dropzone .hint{font-size:12px;color:var(--text-dim);}
   #fileInput{display:none;}
 
+  .dropzone-mini{
+    border:1.5px dashed var(--border);border-radius:var(--radius);
+    padding:18px 14px;text-align:center;cursor:pointer;transition:border-color .15s, background .15s;
+    background:var(--bg-panel-2);
+  }
+  .dropzone-mini.drag{border-color:var(--accent);background:var(--accent-soft);}
+  .dropzone-mini .main{font-size:13px;color:var(--text);}
+  .dropzone-mini input[type=file]{display:none;}
+
   table{width:100%;border-collapse:collapse;font-size:12.5px;}
   table.data th, table.data td{padding:8px 10px;border-bottom:1px solid var(--border);text-align:right;white-space:nowrap;}
   table.data th{color:var(--text-dim);font-weight:600;font-size:11.5px;text-align:right;}
@@ -175,6 +184,7 @@
   .bars{display:flex;flex-direction:column;gap:6px;}
   .bar-row{display:grid;grid-template-columns:76px 1fr 60px;gap:10px;align-items:center;font-size:11.5px;}
   .bar-row .lbl{color:var(--text-dim);font-family:var(--data-font);text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .bar-row.media-label .lbl{text-align:left;}
   .bar-row.wide-label{grid-template-columns:132px 1fr 56px;}
   .bar-track{background:var(--bg-panel-2);border-radius:4px;height:16px;position:relative;overflow:hidden;}
   .bar-fill{height:100%;border-radius:4px;background:var(--accent);transition:width .2s;}
@@ -513,6 +523,18 @@
     </div>
 
     <div class="panel">
+      <h2>継続率CSV取込<span class="n">（ecforce「n〜n+1回」継続率レポートから一括反映）</span></h2>
+      <div class="note-box">
+        オファーごとに1ファイルずつアップロードしてください。A列=年月、B列=回数（0〜1→1回目、1〜2→2回目…）、C列=継続率(%)として読み込みます。1回目（0〜1）は常に100%として扱うため取り込み対象外です。
+      </div>
+      <div id="ltvRetentionDropzone" class="dropzone-mini">
+        <div class="main">継続率CSVをドラッグ&ドロップ、またはクリックして選択</div>
+        <input type="file" id="ltvRetentionFileInput" accept=".csv">
+      </div>
+      <div id="ltvRetentionImportArea"></div>
+    </div>
+
+    <div class="panel">
       <h2>設定（商材: <span id="ltvSettingsCategoryLabel"></span>）</h2>
       <div class="note-box" id="ltvSettingsAllNote" style="display:none;">「すべて」を選んでいる間は、商材ごとの単価・原価・継続率・お届け頻度の設定は編集できません。商材タブで個別の商材を選んでください。</div>
       <div id="ltvSettingsBody">
@@ -708,7 +730,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "3.9.0";
+  const APP_VERSION = "3.12.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -1614,31 +1636,50 @@
       intervals: [30], retention: {}
     };
   }
-  // Resolves the front/upsell retention curve to use: a month-specific override
-  // if this 獲得月 has its own data entered, otherwise the 商材 common default.
-  function getLtvRetention(category, monthKey){
-    const s = getLtvCategorySettings(category);
-    const byMonth = s.retentionByMonth && s.retentionByMonth[monthKey];
-    if (byMonth){
-      return {
-        frontRetention: byMonth.frontRetention || {},
-        upsellRetention: byMonth.upsellRetention || {},
-        isMonthOverride: true
-      };
+  // Reads a category's retentionByMonth entry for a given month, migrating the
+  // old flat format ({frontRetention,upsellRetention} directly under the month)
+  // into the new offer-keyed format ({'': {frontRetention,upsellRetention}, [offer]: {...}})
+  // on the fly, without mutating storage — old data keeps working as the
+  // "all offers" (offer='') fallback.
+  function normalizedMonthRetentionEntry(rawEntry){
+    if (!rawEntry) return null;
+    if (rawEntry.frontRetention || rawEntry.upsellRetention){
+      // old flat format — treat as the offer='' entry
+      return { '': { frontRetention: rawEntry.frontRetention||{}, upsellRetention: rawEntry.upsellRetention||{} } };
     }
-    return { frontRetention: s.frontRetention || {}, upsellRetention: s.upsellRetention || {}, isMonthOverride: false };
+    return rawEntry; // already offer-keyed
+  }
+  // Resolves the front/upsell retention curve to use, in priority order:
+  // 1) this 獲得月 + this specific オファー, 2) this 獲得月's "all offers" entry,
+  // 3) the 商材 common default. offer='' always means "no specific offer".
+  function getLtvRetention(category, monthKey, offer){
+    const s = getLtvCategorySettings(category);
+    const byMonth = normalizedMonthRetentionEntry(s.retentionByMonth && s.retentionByMonth[monthKey]);
+    if (byMonth){
+      if (offer && byMonth[offer]){
+        return { frontRetention: byMonth[offer].frontRetention||{}, upsellRetention: byMonth[offer].upsellRetention||{}, isMonthOverride:true, isOfferOverride:true };
+      }
+      if (byMonth['']){
+        return { frontRetention: byMonth[''].frontRetention||{}, upsellRetention: byMonth[''].upsellRetention||{}, isMonthOverride:true, isOfferOverride:false };
+      }
+    }
+    return { frontRetention: s.frontRetention || {}, upsellRetention: s.upsellRetention || {}, isMonthOverride: false, isOfferOverride: false };
   }
   // Averages the retention rate at each cycle position across all OTHER acquisition
-  // months that have their own recorded retention data for this 商材 — used as a
-  // starting prediction for a month whose actual continuation isn't fully known yet
-  // (e.g. the current/latest month).
-  function predictRetentionFromPastMonths(category, excludeMonthKey, field){
+  // months that have their own recorded retention data for this 商材/オファー — used
+  // as a starting prediction for a month whose actual continuation isn't fully known
+  // yet (e.g. the current/latest month).
+  function predictRetentionFromPastMonths(category, excludeMonthKey, field, offer){
     const s = getLtvCategorySettings(category);
-    const monthEntries = Object.entries(s.retentionByMonth || {}).filter(([mo])=>mo!==excludeMonthKey);
+    const offerKey = offer || '';
+    const monthEntries = Object.entries(s.retentionByMonth || {})
+      .filter(([mo])=>mo!==excludeMonthKey)
+      .map(([mo, raw])=>[mo, normalizedMonthRetentionEntry(raw)])
+      .filter(([mo, norm])=>norm && norm[offerKey]);
     if (!monthEntries.length) return null;
     const sums = {}, counts = {};
-    monthEntries.forEach(([mo, data])=>{
-      const ret = data[field] || {};
+    monthEntries.forEach(([mo, norm])=>{
+      const ret = norm[offerKey][field] || {};
       Object.keys(ret).forEach(cycleKey=>{
         const v = Number(ret[cycleKey]);
         if (isNaN(v)) return;
@@ -1761,7 +1802,7 @@
     const s = getLtvCategorySettings(category);
     const g = loadLtvGlobal();
     initialAdCost = initialAdCost || 0;
-    const retention = getLtvRetention(category, acquisitionMonthKey || currentMonthKey());
+    const retention = getLtvRetention(category, acquisitionMonthKey || currentMonthKey(), offer);
 
     const intervals = getLtvIntervals(category, offer);
     const frontSchedule = cycleScheduleFor(intervals.frontIntervals);
@@ -1834,7 +1875,7 @@
       const otherCost = fee + loss + fixedCost + oneTimeCost;
       const profit = b.revenue - b.cogs - adCost - otherCost;
 
-      rows.push({ month, frontCount:b.frontCount, upsellCount:b.upsellCount, extraCount:b.extraCount, orders, revenue:b.revenue, cogs:b.cogs, adCost, otherCost, profit, frontRates:b.frontRates, upsellRates:b.upsellRates });
+      rows.push({ month, frontCount:b.frontCount, upsellCount:b.upsellCount, extraCount:b.extraCount, orders, revenue:b.revenue, cogs:b.cogs, adCost, fee, loss, fixedCost, oneTimeCost, otherCost, cost: b.cogs+otherCost, profit, frontRates:b.frontRates, upsellRates:b.upsellRates });
       totalOrders += orders;
       totalRevenue += b.revenue;
       totalCogs += b.cogs;
@@ -1882,14 +1923,14 @@
     const rows = [];
     let totalOrders=0, totalRevenue=0, totalCogs=0, totalAdCost=0, totalOtherCost=0;
     for (let month=1; month<=maxMonth; month++){
-      let frontCount=0, upsellCount=0, extraCount=0, revenue=0, cogs=0, adCost=0, otherCost=0;
+      let frontCount=0, upsellCount=0, extraCount=0, revenue=0, cogs=0, adCost=0, fee=0, loss=0, fixedCost=0, oneTimeCost=0, otherCost=0;
       sims.forEach(s=>{
         const r = s.rows[month-1];
-        if (r){ frontCount+=r.frontCount; upsellCount+=r.upsellCount; extraCount+=(r.extraCount||0); revenue+=r.revenue; cogs+=r.cogs; adCost+=r.adCost; otherCost+=r.otherCost; }
+        if (r){ frontCount+=r.frontCount; upsellCount+=r.upsellCount; extraCount+=(r.extraCount||0); revenue+=r.revenue; cogs+=r.cogs; adCost+=r.adCost; fee+=(r.fee||0); loss+=(r.loss||0); fixedCost+=(r.fixedCost||0); oneTimeCost+=(r.oneTimeCost||0); otherCost+=r.otherCost; }
       });
       const orders = frontCount+upsellCount+extraCount;
       const profit = revenue-cogs-adCost-otherCost;
-      rows.push({ month, frontCount, upsellCount, extraCount, orders, revenue, cogs, adCost, otherCost, profit, frontRates:[], upsellRates:[] });
+      rows.push({ month, frontCount, upsellCount, extraCount, orders, revenue, cogs, adCost, fee, loss, fixedCost, oneTimeCost, otherCost, cost: cogs+otherCost, profit, frontRates:[], upsellRates:[] });
       totalOrders+=orders; totalRevenue+=revenue; totalCogs+=cogs; totalAdCost+=adCost; totalOtherCost+=otherCost;
     }
     const totalProfit = totalRevenue-totalCogs-totalAdCost-totalOtherCost;
@@ -2074,11 +2115,98 @@
     });
     const activeSim = ltvSelectedScenario === 'landing' ? landingSim : progressSim;
     const hasExtraProducts = (getLtvCategorySettings(ltvSelectedCategory||targetCategories[0]||'').extraProducts||[]).length > 0;
+
+    function costCellHtml(rowKey, cost, cogs, fee, loss, fixedCost, oneTimeCost, adCostForNote){
+      return `
+        <td class="num">
+          <button type="button" class="ltv-cost-toggle" data-row="${rowKey}" style="background:none;border:none;color:var(--text);cursor:pointer;font:inherit;text-decoration:underline dotted;padding:0;">${fmtYen(cost)}</button>
+        </td>
+      `;
+    }
+    function costDetailRowHtml(rowKey, r, colspanBefore, colspanAfter){
+      return `
+        <tr class="ltv-cost-detail" data-row="${rowKey}" style="display:none;background:var(--bg-panel-2);">
+          <td colspan="${colspanBefore}"></td>
+          <td colspan="2" style="text-align:left;font-size:11.5px;color:var(--text-dim);line-height:1.9;">
+            原価：${fmtYen(r.cogs)}<br>
+            決済手数料：${fmtYen(r.fee)}<br>
+            ロス：${fmtYen(r.loss)}<br>
+            固定費目：${fmtYen(r.fixedCost)}${r.oneTimeCost>0?`<br>1回きりコスト：${fmtYen(r.oneTimeCost)}`:''}
+          </td>
+          <td colspan="${colspanAfter}"></td>
+        </tr>
+      `;
+    }
+
+    // 件数(フロント/アップセル/追加商品/合計) と 継続率(フロント/アップセル) をそれぞれ
+    // 2階層ヘッダーでまとめ、原価+その他コストは「コスト」1本にまとめてクリックで内訳表示。
+    const countColCount = hasExtraProducts ? 4 : 3; // フロント/アップセル/(追加商品)/合計
+    function moneyStyle(value){ return value < 0 ? 'color:var(--danger);' : ''; }
+
+    function costCellHtml(rowKey, cost){
+      return `
+        <td class="num" style="background:var(--danger-soft);">
+          <button type="button" class="ltv-cost-toggle" data-row="${rowKey}" style="background:none;border:none;color:var(--text);${moneyStyle(cost)}cursor:pointer;font:inherit;text-decoration:underline dotted;padding:0;">${fmtYen(cost)}</button>
+        </td>
+      `;
+    }
+    function costDetailRowHtml(rowKey, r, colspanBefore, colspanAfter){
+      return `
+        <tr class="ltv-cost-detail" data-row="${rowKey}" style="display:none;background:var(--bg-panel-2);">
+          <td colspan="${colspanBefore}"></td>
+          <td colspan="2" style="text-align:left;font-size:11.5px;color:var(--text-dim);line-height:1.9;">
+            原価：${fmtYen(r.cogs)}<br>
+            決済手数料：${fmtYen(r.fee)}<br>
+            ロス：${fmtYen(r.loss)}<br>
+            固定費目：${fmtYen(r.fixedCost)}${r.oneTimeCost>0?`<br>1回きりコスト：${fmtYen(r.oneTimeCost)}`:''}
+          </td>
+          <td colspan="${colspanAfter}"></td>
+        </tr>
+      `;
+    }
+
+    // 列順: ヶ月目 → フロント(件数・継続率) → アップセル(件数・継続率) → 追加商品件数
+    // → 合計件数 → 売上 → 広告費 → コスト → 利益。件数と継続率は必ず隣り合わせにし、
+    // 売上・コスト・利益は項目名（見出し）の背景色で見分ける（数値そのものの色は変えない）。
+    // どの列でもマイナス金額は常に赤字で表示。
     document.getElementById('ltvCycleTable').innerHTML = `
-      <thead><tr><th>ヶ月目</th><th class="num">フロント件数</th><th class="num">フロント継続率</th><th class="num">アップセル件数</th><th class="num">アップセル継続率</th>${hasExtraProducts?'<th class="num">追加商品件数</th>':''}<th class="num">合計件数</th><th class="num">売上</th><th class="num">原価</th><th class="num">広告費</th><th class="num">その他コスト</th><th class="num">利益</th></tr></thead>
-      <tbody>${activeSim.rows.map(r=>{
+      <thead>
+        <tr>
+          <th rowspan="2">ヶ月目</th>
+          <th colspan="2">フロント</th>
+          <th colspan="2">アップセル</th>
+          ${hasExtraProducts?'<th rowspan="2">追加商品件数</th>':''}
+          <th rowspan="2">合計件数</th>
+          <th rowspan="2" style="background:var(--blue-soft);">売上</th>
+          <th rowspan="2">広告費</th>
+          <th rowspan="2" style="background:var(--danger-soft);">コスト</th>
+          <th rowspan="2" style="background:var(--good-soft);">利益</th>
+        </tr>
+        <tr>
+          <th class="num">件数</th><th class="num">継続率</th>
+          <th class="num">件数</th><th class="num">継続率</th>
+        </tr>
+      </thead>
+      <tbody>
+      <tr class="total-row-top">
+        <td>合計</td>
+        <td class="num" style="text-align:right;">—</td>
+        <td class="num" style="text-align:right;">—</td>
+        <td class="num" style="text-align:right;">—</td>
+        <td class="num" style="text-align:right;">—</td>
+        ${hasExtraProducts?'<td class="num" style="text-align:right;">—</td>':''}
+        <td class="num" style="text-align:right;">${fmtNum(Math.round(activeSim.totalOrders))}</td>
+        <td class="num" style="text-align:right;background:var(--blue-soft);${moneyStyle(activeSim.totalRevenue)}">${fmtYen(activeSim.totalRevenue)}</td>
+        <td class="num" style="text-align:right;">${fmtYen(activeSim.totalAdCost)}</td>
+        <td class="num" style="text-align:right;background:var(--danger-soft);${moneyStyle(activeSim.totalCogs+activeSim.totalOtherCost)}">${fmtYen(activeSim.totalCogs+activeSim.totalOtherCost)}</td>
+        <td class="num" style="text-align:right;background:var(--good-soft);font-weight:700;${moneyStyle(activeSim.totalProfit)}">${fmtYen(activeSim.totalProfit)}<span style="font-size:10.5px;color:var(--text-dim);font-weight:400;"> （利益率 ${activeSim.totalRevenue>0?(activeSim.totalProfit/activeSim.totalRevenue*100).toFixed(1)+'%':'—'}）</span></td>
+      </tr>
+      ${activeSim.rows.map((r,idx)=>{
         const frontRateStr = r.frontRates.length ? r.frontRates.map(x=>(x*100).toFixed(0)+'%').join(', ') : '—';
         const upsellRateStr = r.upsellRates.length ? r.upsellRates.map(x=>(x*100).toFixed(0)+'%').join(', ') : '—';
+        const rowKey = 'm'+r.month+'-'+idx;
+        const colspanBefore = 1 + 4 + (hasExtraProducts?1:0) + 1 + 1; // ヶ月目 + フロント2 + アップセル2 + (追加商品) + 合計件数 + 売上
+        const colspanAfter = 1; // 利益
         return `
         <tr>
           <td>${r.month}ヶ月目</td>
@@ -2088,29 +2216,20 @@
           <td class="num">${upsellRateStr}</td>
           ${hasExtraProducts?`<td class="num">${r.extraCount>0?fmtNum(Math.round(r.extraCount)):'—'}</td>`:''}
           <td class="num">${fmtNum(Math.round(r.orders))}</td>
-          <td class="num">${fmtYen(r.revenue)}</td>
-          <td class="num">${fmtYen(r.cogs)}</td>
-          <td class="num">${r.adCost>0?fmtYen(r.adCost):'—'}</td>
-          <td class="num">${fmtYen(r.otherCost)}</td>
-          <td class="num" style="color:${r.profit>=0?'var(--good)':'var(--danger)'};">${fmtYen(r.profit)}</td>
+          <td class="num" style="background:var(--blue-soft);${moneyStyle(r.revenue)}">${fmtYen(r.revenue)}</td>
+          <td class="num" style="${moneyStyle(r.adCost)}">${r.adCost>0?fmtYen(r.adCost):'—'}</td>
+          ${costCellHtml(rowKey, r.cost)}
+          <td class="num" style="background:var(--good-soft);font-weight:600;${moneyStyle(r.profit)}">${fmtYen(r.profit)}</td>
         </tr>
-      `;}).join('')}
-      <tr class="total-row-top">
-        <td>合計</td>
-        <td class="num" style="text-align:right;">—</td>
-        <td class="num" style="text-align:right;">—</td>
-        <td class="num" style="text-align:right;">—</td>
-        <td class="num" style="text-align:right;">—</td>
-        ${hasExtraProducts?'<td class="num" style="text-align:right;">—</td>':''}
-        <td class="num" style="text-align:right;">${fmtNum(Math.round(activeSim.totalOrders))}</td>
-        <td class="num" style="text-align:right;">${fmtYen(activeSim.totalRevenue)}</td>
-        <td class="num" style="text-align:right;">${fmtYen(activeSim.totalCogs)}</td>
-        <td class="num" style="text-align:right;">${fmtYen(activeSim.totalAdCost)}</td>
-        <td class="num" style="text-align:right;">${fmtYen(activeSim.totalOtherCost)}</td>
-        <td class="num" style="text-align:right;">${fmtYen(activeSim.totalProfit)}<span style="font-size:10.5px;color:var(--text-dim);"> （利益率 ${activeSim.totalRevenue>0?(activeSim.totalProfit/activeSim.totalRevenue*100).toFixed(1)+'%':'—'}）</span></td>
-      </tr>
-      </tbody>
+        ${costDetailRowHtml(rowKey, r, colspanBefore, colspanAfter)}
+      `;}).join('')}</tbody>
     `;
+    document.querySelectorAll('.ltv-cost-toggle').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const detailRow = document.querySelector(`.ltv-cost-detail[data-row="${btn.dataset.row}"]`);
+        if (detailRow) detailRow.style.display = detailRow.style.display === 'none' ? '' : 'none';
+      });
+    });
 
     // ---- per-category settings only make sense for a single selected 商材 ----
     if (!ltvSelectedCategory){
@@ -2153,16 +2272,17 @@
       inp.addEventListener('change', ()=>{ clearTimeout(t); commit(); });
     });
 
-    // ---- settings: retention rate table (獲得月ごとに異なる値を持てる) ----
-    const retentionInfo = getLtvRetention(ltvSelectedCategory, ltvSelectedMonth);
+    // ---- settings: retention rate table (獲得月・オファーごとに異なる値を持てる) ----
+    const retentionOfferKey = ltvSelectedOffer || '';
+    const retentionInfo = getLtvRetention(ltvSelectedCategory, ltvSelectedMonth, retentionOfferKey);
     const cycleCols = [];
     for (let c=2;c<=LTV_EXPLICIT_CYCLES;c++) cycleCols.push(String(c));
     cycleCols.push('rest');
     document.getElementById('ltvRetentionNote').innerHTML = `
       <div class="note-box">
-        獲得月「${escapeHtml(ltvSelectedMonth)}」の継続率を編集しています。${retentionInfo.isMonthOverride ? 'この月専用の値が設定されています。' : 'まだこの月専用の値がないため、商材共通のデフォルト値を表示しています。ここを編集するとこの月専用の値として保存されます。'}
+        獲得月「${escapeHtml(ltvSelectedMonth)}」${retentionOfferKey?'・オファー「'+escapeHtml(retentionOfferKey)+'」':'（すべてのオファー共通）'}の継続率を編集しています。${retentionInfo.isOfferOverride ? 'このオファー専用の値が設定されています。' : (retentionInfo.isMonthOverride ? 'この月の「すべてのオファー」共通値を表示しています。' : 'まだこの月の値がないため、商材共通のデフォルト値を表示しています。')}ここを編集すると、今表示中の条件専用の値として保存されます。
         <button class="btn small" id="ltvRetentionPredictBtn" style="margin-left:8px;">過去の月の平均から予測して埋める</button>
-        ${retentionInfo.isMonthOverride ? '<button class="btn small" id="ltvRetentionResetMonthBtn" style="margin-left:6px;">この月の値を削除（デフォルトに戻す）</button>' : ''}
+        ${(retentionInfo.isMonthOverride) ? '<button class="btn small" id="ltvRetentionResetMonthBtn" style="margin-left:6px;">この条件の値を削除（デフォルトに戻す）</button>' : ''}
       </div>
     `;
     document.getElementById('ltvRetentionTable').innerHTML = `
@@ -2175,25 +2295,29 @@
     function ensureMonthRetentionEntry(all){
       if (!all[ltvSelectedCategory]) all[ltvSelectedCategory] = defaultLtvCategorySettings();
       if (!all[ltvSelectedCategory].retentionByMonth) all[ltvSelectedCategory].retentionByMonth = {};
-      if (!all[ltvSelectedCategory].retentionByMonth[ltvSelectedMonth]){
-        // start from whatever is currently shown (month override or default fallback) so
+      const raw = all[ltvSelectedCategory].retentionByMonth[ltvSelectedMonth];
+      let normalized = normalizedMonthRetentionEntry(raw);
+      if (!normalized) normalized = {};
+      all[ltvSelectedCategory].retentionByMonth[ltvSelectedMonth] = normalized;
+      if (!normalized[retentionOfferKey]){
+        // start from whatever is currently shown (offer/month override or default fallback) so
         // unedited cells keep their existing effective value rather than resetting to blank
-        all[ltvSelectedCategory].retentionByMonth[ltvSelectedMonth] = {
+        normalized[retentionOfferKey] = {
           frontRetention: Object.assign({}, retentionInfo.frontRetention),
           upsellRetention: Object.assign({}, retentionInfo.upsellRetention)
         };
       }
-      return all[ltvSelectedCategory].retentionByMonth[ltvSelectedMonth];
+      return normalized[retentionOfferKey];
     }
     document.querySelectorAll('.ltv-retention-input').forEach(inp=>{
       let t=null;
       function commit(){
         const all = loadLtvSettings();
-        const monthEntry = ensureMonthRetentionEntry(all);
+        const offerEntry = ensureMonthRetentionEntry(all);
         const field = inp.dataset.type === 'front' ? 'frontRetention' : 'upsellRetention';
-        if (!monthEntry[field]) monthEntry[field] = {};
+        if (!offerEntry[field]) offerEntry[field] = {};
         const pctVal = Number(inp.value);
-        monthEntry[field][inp.dataset.cycle] = isNaN(pctVal) ? 0 : pctVal/100;
+        offerEntry[field][inp.dataset.cycle] = isNaN(pctVal) ? 0 : pctVal/100;
         saveLtvSettings(all);
         renderLtvTab();
       }
@@ -2201,16 +2325,16 @@
       inp.addEventListener('change', ()=>{ clearTimeout(t); commit(); });
     });
     document.getElementById('ltvRetentionPredictBtn').addEventListener('click', ()=>{
-      const front = predictRetentionFromPastMonths(ltvSelectedCategory, ltvSelectedMonth, 'frontRetention');
-      const upsell = predictRetentionFromPastMonths(ltvSelectedCategory, ltvSelectedMonth, 'upsellRetention');
+      const front = predictRetentionFromPastMonths(ltvSelectedCategory, ltvSelectedMonth, 'frontRetention', retentionOfferKey);
+      const upsell = predictRetentionFromPastMonths(ltvSelectedCategory, ltvSelectedMonth, 'upsellRetention', retentionOfferKey);
       if (!front && !upsell){
-        alert('他の獲得月にまだ継続率データがないため、予測できませんでした。');
+        alert('他の獲得月にまだこの条件の継続率データがないため、予測できませんでした。');
         return;
       }
       const all = loadLtvSettings();
-      const monthEntry = ensureMonthRetentionEntry(all);
-      if (front) monthEntry.frontRetention = front;
-      if (upsell) monthEntry.upsellRetention = upsell;
+      const offerEntry = ensureMonthRetentionEntry(all);
+      if (front) offerEntry.frontRetention = front;
+      if (upsell) offerEntry.upsellRetention = upsell;
       saveLtvSettings(all);
       renderLtvTab();
     });
@@ -2218,8 +2342,11 @@
     if (resetMonthBtn){
       resetMonthBtn.addEventListener('click', ()=>{
         const all = loadLtvSettings();
-        if (all[ltvSelectedCategory] && all[ltvSelectedCategory].retentionByMonth){
-          delete all[ltvSelectedCategory].retentionByMonth[ltvSelectedMonth];
+        const raw = all[ltvSelectedCategory] && all[ltvSelectedCategory].retentionByMonth && all[ltvSelectedCategory].retentionByMonth[ltvSelectedMonth];
+        const normalized = normalizedMonthRetentionEntry(raw);
+        if (normalized && normalized[retentionOfferKey]){
+          delete normalized[retentionOfferKey];
+          all[ltvSelectedCategory].retentionByMonth[ltvSelectedMonth] = normalized;
           saveLtvSettings(all);
           renderLtvTab();
         }
@@ -2753,7 +2880,7 @@
       const maxMedia = Math.max(1, ...mediaEntries.map(e=>e[1]));
       document.getElementById('dashMediaBars').innerHTML = mediaEntries.map(([name,c])=>{
         const w = (c/maxMedia*100).toFixed(1);
-        return `<div class="bar-row wide-label"><div class="lbl" title="${escapeHtml(name)}">${escapeHtml(name)}</div><div class="bar-track"><div class="bar-fill" style="width:${w}%"></div></div><div class="val">${fmtNum(c)}</div></div>`;
+        return `<div class="bar-row wide-label media-label"><div class="lbl" title="${escapeHtml(name)}">${escapeHtml(name)}</div><div class="bar-track"><div class="bar-fill" style="width:${w}%"></div></div><div class="val">${fmtNum(c)}</div></div>`;
       }).join('') || '<div class="empty-note">データがありません</div>';
     }
 
@@ -3840,7 +3967,7 @@
     const maxVal = Math.max(1, ...entries.map(e=>e.value));
     document.getElementById('mediaMonthBars').innerHTML = entries.map(e=>{
       const w = (e.value/maxVal*100).toFixed(1);
-      return `<div class="bar-row wide-label"><div class="lbl" title="${escapeHtml(e.label)}">${escapeHtml(e.label)}</div><div class="bar-track"><div class="bar-fill" style="width:${w}%"></div></div><div class="val">${fmtNum(e.value)}</div></div>`;
+      return `<div class="bar-row wide-label media-label"><div class="lbl" title="${escapeHtml(e.label)}">${escapeHtml(e.label)}</div><div class="bar-track"><div class="bar-fill" style="width:${w}%"></div></div><div class="val">${fmtNum(e.value)}</div></div>`;
     }).join('') || '<div class="empty-note">データがありません</div>';
 
     // pie chart (reuses the same generic pie renderer used in デモグラ)
@@ -3856,6 +3983,200 @@
     });
     lines.push(`※合計${fmtNum(monthTotal)}件`);
     document.getElementById('mediaReportTextArea').value = lines.join('\n');
+  }
+
+  // ---------- 継続率CSV取込 (ecforce n〜n+1回 継続率レポート) ----------
+  let ltvRetentionImportState = null; // { parsed, category, offer, type, selectedMonths:Set, editedValues }
+
+  function parseRetentionCSV(text){
+    const rows = parseCSV(text);
+    const dataRows = rows.slice(1).filter(r=>r.length>=3);
+    const parsed = {}; // month -> { cycleKey: ratePercent }
+    dataRows.forEach(r=>{
+      const monthRaw = (r[0]||'').trim();
+      const cycleRaw = (r[1]||'').trim();
+      const rateRaw = (r[2]||'').trim();
+      const totalRaw = (r[4]||'').trim(); // 合計(件) — skip rows with 0 orders (no real data yet)
+      if (!monthRaw || !cycleRaw) return;
+      const dateParts = monthRaw.split('/');
+      if (dateParts.length < 2) return;
+      const monthKey = `${dateParts[0]}-${String(dateParts[1]).padStart(2,'0')}`;
+      const m = cycleRaw.match(/(\d+)\s*[〜～~]\s*(\d+)/);
+      if (!m) return;
+      const cycle = Number(m[1]) + 1; // "0〜1"->1回目, "1〜2"->2回目, "n〜n+1"->(n+1)回目
+      if (cycle <= 1) return; // 1回目は常に100%扱いのため取込対象外
+      const rate = Number(rateRaw);
+      if (isNaN(rate)) return;
+      if (totalRaw !== '' && Number(totalRaw) === 0) return; // まだ実績が無い将来月などはスキップ
+      const cycleKey = cycle <= LTV_EXPLICIT_CYCLES ? String(cycle) : 'rest';
+      if (!parsed[monthKey]) parsed[monthKey] = {};
+      parsed[monthKey][cycleKey] = rate;
+    });
+    return parsed;
+  }
+
+  function handleRetentionCSVFile(file){
+    const reader = new FileReader();
+    reader.onload = function(e){
+      const text = decodeBuffer(e.target.result);
+      let parsed;
+      try{
+        parsed = parseRetentionCSV(text);
+      }catch(err){
+        document.getElementById('ltvRetentionImportArea').innerHTML = `<div class="panel" style="margin-top:12px;background:var(--danger-soft);border-color:var(--danger);"><strong>エラー:</strong> ${escapeHtml(err.message||'CSVの読み込みに失敗しました')}</div>`;
+        return;
+      }
+      const months = Object.keys(parsed);
+      if (!months.length){
+        document.getElementById('ltvRetentionImportArea').innerHTML = `<div class="panel" style="margin-top:12px;background:var(--danger-soft);border-color:var(--danger);"><strong>エラー:</strong> 継続率データを読み取れませんでした。CSVの形式を確認してください。</div>`;
+        return;
+      }
+      ltvRetentionImportState = {
+        parsed,
+        category: ltvSelectedCategory || '',
+        offer: '',
+        type: 'front',
+        selectedMonths: new Set(months),
+        editedValues: {}
+      };
+      renderRetentionImportPreview();
+    };
+    reader.readAsArrayBuffer(file);
+  }
+
+  function renderRetentionImportPreview(){
+    const area = document.getElementById('ltvRetentionImportArea');
+    const state = ltvRetentionImportState;
+    if (!state){ area.innerHTML = ''; return; }
+
+    const records = loadRecords();
+    const allCategories = uniqueSorted(records.map(r=>r.category));
+    const categoryGroups = state.category ? uniqueSorted(records.filter(r=>r.category===state.category && r.group).map(r=>r.group)) : [];
+    const offers = uniqueSorted(categoryGroups.map(g=>resolveOffer(state.category, g)));
+
+    const months = Object.keys(state.parsed).sort();
+    const cycleSet = new Set();
+    months.forEach(mo=>Object.keys(state.parsed[mo]).forEach(c=>cycleSet.add(c)));
+    const allCycles = Array.from(cycleSet).sort((a,b)=>{
+      if (a==='rest') return 1; if (b==='rest') return -1; return Number(a)-Number(b);
+    });
+    const latestMonth = months[months.length-1];
+
+    function effectiveVal(mo, c){
+      if (state.editedValues[mo] && state.editedValues[mo][c] != null) return state.editedValues[mo][c];
+      return state.parsed[mo][c] != null ? state.parsed[mo][c] : null;
+    }
+
+    area.innerHTML = `
+      <div class="controls" style="margin-top:14px;">
+        <label>商材 <select id="riCategory">
+          <option value="">選択してください</option>
+          ${allCategories.map(c=>`<option value="${escapeHtml(c)}" ${state.category===c?'selected':''}>${escapeHtml(c)}</option>`).join('')}
+        </select></label>
+        <label>オファー <select id="riOffer">
+          <option value="">すべて（オファー共通）</option>
+          ${offers.map(o=>`<option value="${escapeHtml(o)}" ${state.offer===o?'selected':''}>${escapeHtml(o)}</option>`).join('')}
+        </select></label>
+        <label>種別 <select id="riType">
+          <option value="front" ${state.type==='front'?'selected':''}>フロント</option>
+          <option value="upsell" ${state.type==='upsell'?'selected':''}>アップセル</option>
+        </select></label>
+      </div>
+      <div class="controls">
+        <button class="btn small" id="riPredictLatestBtn">最新月（${escapeHtml(latestMonth)}）を過去の平均で置き換える</button>
+        <span class="n">当月はまだ2回目以降が出荷されていないことが多く、そのまま反映すると低い継続率になってしまう場合に使ってください。</span>
+      </div>
+      <div class="table-wrap">
+        <table class="data">
+          <thead><tr>
+            <th><input type="checkbox" id="riCheckAll" checked></th>
+            <th>年月</th>
+            ${allCycles.map(c=>`<th class="num">${c==='rest'?`${LTV_EXPLICIT_CYCLES+1}回目以降`:c+'回目'}</th>`).join('')}
+          </tr></thead>
+          <tbody>${months.map(mo=>`
+            <tr>
+              <td><input type="checkbox" class="ri-row-check" data-month="${mo}" ${state.selectedMonths.has(mo)?'checked':''}></td>
+              <td style="text-align:left;">${mo}${mo===latestMonth?' <span class="n">(最新月)</span>':''}</td>
+              ${allCycles.map(c=>{
+                const val = effectiveVal(mo, c);
+                return `<td class="num">${val!=null ? `<input type="number" class="ri-cell" data-month="${escapeHtml(mo)}" data-cycle="${escapeHtml(c)}" value="${val}" step="0.01" style="width:64px;text-align:right;">` : '—'}</td>`;
+              }).join('')}
+            </tr>
+          `).join('')}</tbody>
+        </table>
+      </div>
+      <div class="controls" style="margin-top:10px;">
+        <button class="btn primary" id="riApplyBtn">チェックした月を収益シミュレーションに反映</button>
+        <button class="btn" id="riCancelBtn">キャンセル</button>
+      </div>
+    `;
+
+    document.getElementById('riCategory').addEventListener('change', (e)=>{ state.category = e.target.value; state.offer=''; renderRetentionImportPreview(); });
+    document.getElementById('riOffer').addEventListener('change', (e)=>{ state.offer = e.target.value; });
+    document.getElementById('riType').addEventListener('change', (e)=>{ state.type = e.target.value; });
+    document.getElementById('riCheckAll').addEventListener('change', (e)=>{
+      document.querySelectorAll('.ri-row-check').forEach(cb=>{
+        cb.checked = e.target.checked;
+        if (e.target.checked) state.selectedMonths.add(cb.dataset.month);
+        else state.selectedMonths.delete(cb.dataset.month);
+      });
+    });
+    document.querySelectorAll('.ri-row-check').forEach(cb=>{
+      cb.addEventListener('change', ()=>{
+        if (cb.checked) state.selectedMonths.add(cb.dataset.month);
+        else state.selectedMonths.delete(cb.dataset.month);
+      });
+    });
+    document.querySelectorAll('.ri-cell').forEach(inp=>{
+      inp.addEventListener('change', ()=>{
+        if (!state.editedValues[inp.dataset.month]) state.editedValues[inp.dataset.month] = {};
+        const v = Number(inp.value);
+        if (!isNaN(v)) state.editedValues[inp.dataset.month][inp.dataset.cycle] = v;
+      });
+    });
+    document.getElementById('riPredictLatestBtn').addEventListener('click', ()=>{
+      const otherMonths = months.filter(m=>m!==latestMonth);
+      if (!otherMonths.length){ alert('比較できる他の月がありません。'); return; }
+      if (!state.editedValues[latestMonth]) state.editedValues[latestMonth] = {};
+      allCycles.forEach(c=>{
+        const vals = otherMonths.map(m=>effectiveVal(m,c)).filter(v=>v!=null);
+        if (vals.length){
+          state.editedValues[latestMonth][c] = Number((vals.reduce((a,b)=>a+b,0)/vals.length).toFixed(2));
+        }
+      });
+      renderRetentionImportPreview();
+    });
+    document.getElementById('riApplyBtn').addEventListener('click', ()=>{
+      if (!state.category){ alert('商材を選択してください。'); return; }
+      if (!state.selectedMonths.size){ alert('反映する年月にチェックを入れてください。'); return; }
+      const all = loadLtvSettings();
+      if (!all[state.category]) all[state.category] = defaultLtvCategorySettings();
+      if (!all[state.category].retentionByMonth) all[state.category].retentionByMonth = {};
+      const field = state.type === 'front' ? 'frontRetention' : 'upsellRetention';
+      const offerKey = state.offer || '';
+
+      months.forEach(mo=>{
+        if (!state.selectedMonths.has(mo)) return;
+        const raw = all[state.category].retentionByMonth[mo];
+        let normalized = normalizedMonthRetentionEntry(raw);
+        if (!normalized) normalized = {};
+        if (!normalized[offerKey]) normalized[offerKey] = { frontRetention:{}, upsellRetention:{} };
+        if (!normalized[offerKey][field]) normalized[offerKey][field] = {};
+        allCycles.forEach(c=>{
+          const val = effectiveVal(mo, c);
+          if (val != null) normalized[offerKey][field][c] = val/100;
+        });
+        all[state.category].retentionByMonth[mo] = normalized;
+      });
+      saveLtvSettings(all);
+      ltvRetentionImportState = null;
+      area.innerHTML = `<div class="panel" style="margin-top:12px;background:var(--good-soft);border-color:var(--good);">反映しました。</div>`;
+      renderLtvTab();
+    });
+    document.getElementById('riCancelBtn').addEventListener('click', ()=>{
+      ltvRetentionImportState = null;
+      area.innerHTML = '';
+    });
   }
 
   function handleDemoFile(file){
@@ -4232,6 +4553,23 @@
   demoDropzone.addEventListener('drop', (e)=>{
     const files = e.dataTransfer.files;
     if (files.length) handleDemoFile(files[0]);
+  });
+
+  const ltvRetentionDropzone = document.getElementById('ltvRetentionDropzone');
+  const ltvRetentionFileInput = document.getElementById('ltvRetentionFileInput');
+  ltvRetentionDropzone.addEventListener('click', ()=>ltvRetentionFileInput.click());
+  ltvRetentionFileInput.addEventListener('change', (e)=>{
+    if (e.target.files.length) handleRetentionCSVFile(e.target.files[0]);
+  });
+  ['dragenter','dragover'].forEach(evt=>{
+    ltvRetentionDropzone.addEventListener(evt, (e)=>{ e.preventDefault(); ltvRetentionDropzone.classList.add('drag'); });
+  });
+  ['dragleave','drop'].forEach(evt=>{
+    ltvRetentionDropzone.addEventListener(evt, (e)=>{ e.preventDefault(); ltvRetentionDropzone.classList.remove('drag'); });
+  });
+  ltvRetentionDropzone.addEventListener('drop', (e)=>{
+    const files = e.dataTransfer.files;
+    if (files.length) handleRetentionCSVFile(files[0]);
   });
 
   document.getElementById('clearAllBtn').addEventListener('click', ()=>{
