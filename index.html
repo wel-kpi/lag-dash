@@ -354,6 +354,10 @@
       </label>
     </div>
     <div class="cat-tabs" id="sumCatTabs"></div>
+    <div class="controls" style="margin-bottom:4px;">
+      <label style="font-size:12px;color:var(--text-dim);">オファー（初回価格帯）で絞り込み</label>
+    </div>
+    <div class="cat-tabs" id="sumOfferTabs"></div>
     <div class="panel">
       <h2>商材 × 代理店 別 獲得件数<span class="n" id="sumRangeLabel"></span></h2>
       <div class="table-wrap">
@@ -486,6 +490,7 @@
       <label style="font-size:12px;color:var(--text-dim);">オファー（初回価格帯）で絞り込み</label>
     </div>
     <div class="cat-tabs" id="ltvOfferTabs"></div>
+    <div id="ltvOfferAliasWrap" style="margin-bottom:16px;"></div>
 
     <div class="panel">
       <h2>2年間シミュレーション結果</h2>
@@ -703,7 +708,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "3.7.1";
+  const APP_VERSION = "3.9.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -1363,6 +1368,7 @@
   // ---------- category tab state ----------
   let dashboardCategory = '';
   let summaryCategory = '';
+  let summaryOffer = '';
   let trendCategory = '';
   let dashboardPeriodKey = 'thismonth';
   let summaryPeriodKey = 'thismonth';
@@ -1472,7 +1478,7 @@
     const remainingDays = isCurrentMonth ? Math.max(0, daysInMonth - dayOfMonth) : 0;
 
     const filtered = filterRecords(records, { from: monthStart, to: todayD, category: category||null })
-      .filter(r => !offer || extractOffer(r.group) === offer);
+      .filter(r => !offer || resolveOffer(category, r.group) === offer);
     const count = filtered.length;
     const cancelCount = filtered.filter(r=>r.isCancel).length;
     const cost = costForRecordsInWindow(filtered, monthStart, todayD);
@@ -1547,7 +1553,7 @@
     const remainingDays = isCurrentMonth ? Math.max(0, daysInMonth - dayOfMonth) : 0;
 
     const filtered = filterRecords(records, { from: monthStart, to: todayD, category: category||null })
-      .filter(r => !offer || extractOffer(r.group) === offer);
+      .filter(r => !offer || resolveOffer(category, r.group) === offer);
     const frontCount = filtered.filter(r=>r.type==='front').length;
     const upsellCount = filtered.filter(r=>r.type==='upsell').length;
 
@@ -1595,6 +1601,7 @@
       frontIntervals: [30],  // days between cycle1→2, 2→3, ... last value repeats (商材共通のデフォルト)
       upsellIntervals: [30],
       offerIntervals: {},  // { [オファー名]: { frontIntervals:[...], upsellIntervals:[...] } } — オファー専用の上書き
+      offerAliases: {},    // { [広告URLグループ名]: '割り当てるオファー名' } — 自動判定を手動で上書き（例：離脱防止ポップアップを初回980円に統合）
       extraProducts: []  // [{ id, productCode, label, initialCount, priceFirst, priceRepeat, cogsFirst, cogsRepeat, intervals:[30], retention:{} }]
                           // シークレットコースなど、途中で移行した別商品コードの分を個別設定して売上に上乗せする
     };
@@ -1857,6 +1864,17 @@
     return lastUnderscore === -1 ? rest : rest.slice(0, lastUnderscore);
   }
 
+  // Resolves the effective オファー for a given 広告URLグループ名, honoring a
+  // manual override if one has been configured for that group (e.g. merging
+  // "離脱防止ポップアップ" into "初回980円" since they sell the same offer),
+  // otherwise falling back to the automatic bracket-parsing heuristic.
+  function resolveOffer(category, group){
+    if (!group) return '';
+    const s = getLtvCategorySettings(category);
+    if (s.offerAliases && s.offerAliases[group]) return s.offerAliases[group];
+    return extractOffer(group);
+  }
+
   // aggregates several category-level simulateLTV() results into one combined
   // simulation, merging rows by month — used for the LTV tab's 「すべて」 view.
   function mergeSims(sims){
@@ -1919,7 +1937,7 @@
 
     // オファー（【商材】初回●●円 のような価格帯セグメント）は「すべて」商材選択時は無効
     const categoryGroups = ltvSelectedCategory ? uniqueSorted(records.filter(r=>r.category===ltvSelectedCategory && r.group).map(r=>r.group)) : [];
-    const offers = uniqueSorted(categoryGroups.map(g=>extractOffer(g)));
+    const offers = uniqueSorted(categoryGroups.map(g=>resolveOffer(ltvSelectedCategory, g)));
     if (ltvSelectedOffer && !offers.includes(ltvSelectedOffer)) ltvSelectedOffer = '';
     document.getElementById('ltvOfferTabs').innerHTML = ltvSelectedCategory ? ['すべて'].concat(offers).map(o=>{
       const val = o==='すべて' ? '' : o;
@@ -1929,6 +1947,46 @@
     document.querySelectorAll('#ltvOfferTabs .cat-btn').forEach(btn=>{
       btn.addEventListener('click', ()=>{ ltvSelectedOffer = btn.dataset.offer; renderLtvTab(); });
     });
+
+    // オファーの手動割り当て（自動判定を上書き）: 例えば「離脱防止ポップアップ」を
+    // 「初回980円」に統合したい場合など、グループ単位でオファーを付け替えられる
+    const aliasWrap = document.getElementById('ltvOfferAliasWrap');
+    if (ltvSelectedCategory && categoryGroups.length){
+      const curSettingsForAlias = getLtvCategorySettings(ltvSelectedCategory);
+      aliasWrap.innerHTML = `
+        <details>
+          <summary style="cursor:pointer;font-size:12px;color:var(--text-dim);">オファーの割り当てを編集（自動判定と違う場合はここで統合できます）</summary>
+          <div class="table-wrap" style="margin-top:8px;">
+            <table class="data">
+              <thead><tr><th>広告URLグループ名</th><th>自動判定オファー</th><th>割り当てオファー</th></tr></thead>
+              <tbody>${categoryGroups.map(g=>{
+                const auto = extractOffer(g);
+                const cur = (curSettingsForAlias.offerAliases && curSettingsForAlias.offerAliases[g]) || '';
+                return `<tr>
+                  <td style="text-align:left;" title="${escapeHtml(g)}">${escapeHtml(g.length>32?g.slice(0,32)+'…':g)}</td>
+                  <td style="text-align:left;color:var(--text-dim);">${escapeHtml(auto)}</td>
+                  <td style="text-align:left;"><input type="text" class="ltv-offer-alias" data-group="${escapeHtml(g)}" value="${escapeHtml(cur)}" placeholder="${escapeHtml(auto)}" style="width:160px;"></td>
+                </tr>`;
+              }).join('')}</tbody>
+            </table>
+          </div>
+        </details>
+      `;
+      document.querySelectorAll('.ltv-offer-alias').forEach(inp=>{
+        inp.addEventListener('change', ()=>{
+          const all = loadLtvSettings();
+          if (!all[ltvSelectedCategory]) all[ltvSelectedCategory] = defaultLtvCategorySettings();
+          if (!all[ltvSelectedCategory].offerAliases) all[ltvSelectedCategory].offerAliases = {};
+          const val = inp.value.trim();
+          if (val) all[ltvSelectedCategory].offerAliases[inp.dataset.group] = val;
+          else delete all[ltvSelectedCategory].offerAliases[inp.dataset.group];
+          saveLtvSettings(all);
+          renderLtvTab();
+        });
+      });
+    } else {
+      aliasWrap.innerHTML = '';
+    }
 
     const targetCategories = ltvSelectedCategory ? [ltvSelectedCategory] : allCategories;
     let progressSim, landingSim, initFrontTotal=0, initUpsellTotal=0, initFrontLandingTotal=0, initUpsellLandingTotal=0;
@@ -2930,7 +2988,20 @@
     const records = loadRecords();
     const allCategories = uniqueSorted(records.map(r=>r.category));
     renderCatTabs(document.getElementById('sumCatTabs'), allCategories, summaryCategory, (cat)=>{
-      summaryCategory = cat; renderSummary();
+      summaryCategory = cat; summaryOffer = ''; renderSummary();
+    });
+
+    // オファー（【商材】初回●●円 のような価格帯セグメント）は商材を選んでいる時だけ有効
+    const categoryGroups = summaryCategory ? uniqueSorted(records.filter(r=>r.category===summaryCategory && r.group).map(r=>r.group)) : [];
+    const offers = uniqueSorted(categoryGroups.map(g=>resolveOffer(summaryCategory, g)));
+    if (summaryOffer && !offers.includes(summaryOffer)) summaryOffer = '';
+    document.getElementById('sumOfferTabs').innerHTML = summaryCategory ? ['すべて'].concat(offers).map(o=>{
+      const val = o==='すべて' ? '' : o;
+      const active = summaryOffer === val ? 'active' : '';
+      return `<button type="button" class="cat-btn ${active}" data-offer="${escapeHtml(val)}" style="${active?'color:var(--accent);border-color:var(--accent);':''}">${escapeHtml(o)}</button>`;
+    }).join('') : '<span class="n">商材を選択するとオファーで絞り込めます</span>';
+    document.querySelectorAll('#sumOfferTabs .cat-btn').forEach(btn=>{
+      btn.addEventListener('click', ()=>{ summaryOffer = btn.dataset.offer; renderSummary(); });
     });
 
     renderPeriodTabs(document.getElementById('sumPeriodTabs'), summaryPeriodKey, (key)=>{
@@ -2946,7 +3017,8 @@
     );
     const sortMode = document.getElementById('sumSort').value;
 
-    const filtered = filterRecords(records, { from: from||null, to: to||null, category: summaryCategory||null });
+    const filtered = filterRecords(records, { from: from||null, to: to||null, category: summaryCategory||null })
+      .filter(r => !summaryOffer || resolveOffer(summaryCategory, r.group) === summaryOffer);
 
     document.getElementById('sumRangeLabel').textContent =
       ` (${from||'全期間'} 〜 ${to||'現在'} / ${fmtNum(filtered.length)}件)`;
