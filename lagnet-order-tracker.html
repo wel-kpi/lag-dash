@@ -529,6 +529,14 @@
           <h3>着地想定（ダッシュボード連動）</h3>
           <div class="grid-kpi" id="ltvLandingKpis"></div>
         </div>
+        <div class="period-box" id="ltvMaxScenarioBox" style="display:none;">
+          <h3 id="ltvMaxScenarioLabel">MAX</h3>
+          <div class="grid-kpi" id="ltvMaxKpis"></div>
+        </div>
+        <div class="period-box" id="ltvMinScenarioBox" style="display:none;">
+          <h3 id="ltvMinScenarioLabel">MIN</h3>
+          <div class="grid-kpi" id="ltvMinKpis"></div>
+        </div>
       </div>
     </div>
 
@@ -559,6 +567,7 @@
       <div id="ltvRetentionSettingsBody">
         <div id="ltvRetentionNote"></div>
         <div class="table-wrap"><table class="data" id="ltvRetentionTable"></table></div>
+        <div id="ltvRetentionPasteArea"></div>
       </div>
     </div>
 
@@ -768,7 +777,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "3.17.0";
+  const APP_VERSION = "3.19.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -1460,6 +1469,17 @@
   let reportPeriodKey = 'thismonth';
   let trendPeriodKey = 'thismonth';
   let ltvSelectedCategory = null; // null = not yet initialized (defaults to first category); '' = explicitly "すべて" (all categories combined)
+  // 継続率入力欄は値を確定すると表全体が再描画されてDOMが作り直されるため、その
+  // 直後にブラウザの標準Tab移動がうまく効かなくなる（フォーカスが失われ、無関係な
+  // 場所に飛んでしまう）。再描画の後にこの関数で「次の欄」へ手動でフォーカスを
+  // 戻すことで、Tabキーでの連続入力を成立させている。
+  function restoreLtvRetentionFocus(selector, focusedTuid){
+    if (focusedTuid == null) return;
+    setTimeout(()=>{
+      const next = document.querySelector(`${selector}[data-tuid="${focusedTuid+1}"]`) || document.querySelector(`${selector}[tabindex="${focusedTuid+1}"]`);
+      if (next){ next.focus(); if (next.select) next.select(); }
+    }, 0);
+  }
   const ltvRetentionSessionOriginals = {}; // first-value-wins cache so the inline "戻す" button always reverts to what was loaded at the start of this session, not just the last render
   let ltvSelectedMonth = null; // acquisition month being simulated; null = current month
   let ltvSelectedScenario = 'progress';
@@ -1763,6 +1783,31 @@
     return Object.keys(avg).length ? avg : null;
   }
 
+  // 「MAX（過去いちばん継続率が良かった月）」「MIN（過去いちばん継続率が悪かった月）」
+  // シナリオ用: そのオファーで実際に継続率データが入力されている獲得月を洗い出し、
+  // 同じ初期件数・広告費を使って各月の継続率で2年間シミュレーションを回し、
+  // 2年間売上が最も高い月をMAX・最も低い月をMINとして返す。
+  function computeMinMaxRetentionScenarios(category, offer, initialFront, initialUpsell, initialAdCost){
+    const s = getLtvCategorySettings(category);
+    const offerKey = offer || '';
+    const candidateMonths = Object.keys(s.retentionByMonth || {}).filter(mo=>{
+      const norm = normalizedMonthRetentionEntry(s.retentionByMonth[mo]);
+      if (!norm || !norm[offerKey]) return false;
+      const fr = norm[offerKey].frontRetention || {};
+      const ur = norm[offerKey].upsellRetention || {};
+      return Object.keys(fr).length > 0 || Object.keys(ur).length > 0;
+    });
+    if (candidateMonths.length < 1) return null;
+    let best = null, worst = null;
+    candidateMonths.forEach(mo=>{
+      const retention = getLtvRetention(category, mo, offerKey);
+      const sim = simulateLTV(category, initialFront, initialUpsell, initialAdCost, offer, mo, retention);
+      if (!best || sim.totalRevenue > best.sim.totalRevenue) best = { month: mo, sim };
+      if (!worst || sim.totalRevenue < worst.sim.totalRevenue) worst = { month: mo, sim };
+    });
+    return { best, worst };
+  }
+
   // Resolves the front/upsell delivery interval schedule to use: an offer-specific
   // override if one has been set for this オファー, otherwise the 商材 common default.
   function getLtvIntervals(category, offer){
@@ -1869,11 +1914,11 @@
   // e.g. an アップセル every 3 months lands its 2nd payment in month 4, not "row 2".
   // Ad acquisition cost is applied once, in month 1 only (when the customer was
   // first acquired), regardless of which type's cycle triggered that month.
-  function simulateLTV(category, initialFront, initialUpsell, initialAdCost, offer, acquisitionMonthKey){
+  function simulateLTV(category, initialFront, initialUpsell, initialAdCost, offer, acquisitionMonthKey, retentionOverride){
     const s = getLtvCategorySettings(category);
     const g = loadLtvGlobal();
     initialAdCost = initialAdCost || 0;
-    const retention = getLtvRetention(category, acquisitionMonthKey || currentMonthKey(), offer);
+    const retention = retentionOverride || getLtvRetention(category, acquisitionMonthKey || currentMonthKey(), offer);
 
     const intervals = getLtvIntervals(category, offer);
     const frontSchedule = cycleScheduleFor(intervals.frontIntervals);
@@ -2027,6 +2072,8 @@
 
     if (!allCategories.length){
       ['ltvProgressKpis','ltvLandingKpis'].forEach(id=>{ document.getElementById(id).innerHTML = '<div class="empty-note">受注データがありません</div>'; });
+      document.getElementById('ltvMaxScenarioBox').style.display = 'none';
+      document.getElementById('ltvMinScenarioBox').style.display = 'none';
       document.getElementById('ltvCycleTable').innerHTML = '';
       return;
     }
@@ -2175,6 +2222,26 @@
       });
     }
 
+    // MAX / MIN シナリオ: このオファーで過去に入力済みの継続率のうち、2年間売上が
+    // 最も高くなる月・最も低くなる月をそれぞれ着地想定と同じ初期件数で試算する
+    if (ltvSelectedCategory){
+      const minMax = computeMinMaxRetentionScenarios(ltvSelectedCategory, ltvSelectedOffer, initFrontLandingTotal, initUpsellLandingTotal, landingCostTotal);
+      if (minMax){
+        document.getElementById('ltvMaxScenarioBox').style.display = '';
+        document.getElementById('ltvMinScenarioBox').style.display = '';
+        document.getElementById('ltvMaxScenarioLabel').textContent = `MAX（${minMax.best.month}の継続率を使用）`;
+        document.getElementById('ltvMinScenarioLabel').textContent = `MIN（${minMax.worst.month}の継続率を使用）`;
+        document.getElementById('ltvMaxKpis').innerHTML = kpiHtml(minMax.best.sim, initFrontLandingTotal, initUpsellLandingTotal, landingCancelTotal, landingCostTotal);
+        document.getElementById('ltvMinKpis').innerHTML = kpiHtml(minMax.worst.sim, initFrontLandingTotal, initUpsellLandingTotal, landingCancelTotal, landingCostTotal);
+      } else {
+        document.getElementById('ltvMaxScenarioBox').style.display = 'none';
+        document.getElementById('ltvMinScenarioBox').style.display = 'none';
+      }
+    } else {
+      document.getElementById('ltvMaxScenarioBox').style.display = 'none';
+      document.getElementById('ltvMinScenarioBox').style.display = 'none';
+    }
+
     // scenario toggle + cycle detail table
     const scenarios = isCurrentMonthSelected ? [{key:'progress',label:'進捗'},{key:'landing',label:'着地想定'}] : [{key:'progress',label:'実績'}];
     if (!isCurrentMonthSelected) ltvSelectedScenario = 'progress';
@@ -2314,12 +2381,15 @@
         if (detailRow) detailRow.style.display = detailRow.style.display === 'none' ? '' : 'none';
       });
     });
+    let ltvInlineRetentionFocusTabIdx = null;
     document.querySelectorAll('.ltv-inline-retention').forEach(inp=>{
       let t=null;
+      inp.addEventListener('focus', ()=>{ ltvInlineRetentionFocusTabIdx = Number(inp.getAttribute('tabindex')); });
       function commit(){
         const v = Number(inp.value);
         if (!isNaN(v)) commitInlineRetention(inp.dataset.type, inp.dataset.cycle, v);
         renderLtvTab();
+        restoreLtvRetentionFocus('.ltv-inline-retention', ltvInlineRetentionFocusTabIdx);
       }
       inp.addEventListener('input', ()=>{ clearTimeout(t); t=setTimeout(commit, 600); });
       inp.addEventListener('change', ()=>{ clearTimeout(t); commit(); });
@@ -2388,15 +2458,16 @@
     document.getElementById('ltvRetentionNote').innerHTML = `
       <div class="note-box">
         獲得月「${escapeHtml(ltvSelectedMonth)}」${retentionOfferKey?'・オファー「'+escapeHtml(retentionOfferKey)+'」':'（すべてのオファー共通）'}の継続率を編集しています。${retentionInfo.isOfferOverride ? 'このオファー専用の値が設定されています。' : (retentionInfo.isMonthOverride ? 'この月の「すべてのオファー」共通値を表示しています。' : 'まだこの月の値がないため、商材共通のデフォルト値を表示しています。')}ここを編集すると、今表示中の条件専用の値として保存されます。
-        <button class="btn small" id="ltvRetentionPredictBtn" style="margin-left:8px;">過去の月の平均から予測して埋める</button>
-        ${(retentionInfo.isMonthOverride) ? '<button class="btn small" id="ltvRetentionResetMonthBtn" style="margin-left:6px;">この条件の値を削除（デフォルトに戻す）</button>' : ''}
+        <button class="btn small" id="ltvRetentionSetDefaultBtn" style="margin-left:8px;">この数値をデフォルトにする</button>
+        <button class="btn small" id="ltvRetentionPredictBtn" style="margin-left:6px;">過去の月の平均から予測して埋める</button>
+        ${(retentionInfo.isMonthOverride) ? '<button class="btn small" id="ltvRetentionResetMonthBtn" style="margin-left:6px;">デフォルトに戻す</button>' : ''}
       </div>
     `;
     document.getElementById('ltvRetentionTable').innerHTML = `
       <thead><tr><th>種別</th>${cycleCols.map(c=>`<th class="num">${c==='rest'?`${LTV_EXPLICIT_CYCLES+1}回目以降`:c+'回目'}</th>`).join('')}</tr></thead>
       <tbody>
-        <tr><td style="text-align:left;">フロント</td>${cycleCols.map(c=>`<td class="num"><input type="number" class="ltv-retention-input" data-type="front" data-cycle="${c}" value="${(retentionInfo.frontRetention[c]!=null? (retentionInfo.frontRetention[c]*100).toFixed(0) : '')}" placeholder="%" style="width:56px;text-align:right;"></td>`).join('')}</tr>
-        <tr><td style="text-align:left;">アップセル</td>${cycleCols.map(c=>`<td class="num"><input type="number" class="ltv-retention-input" data-type="upsell" data-cycle="${c}" value="${(retentionInfo.upsellRetention[c]!=null? (retentionInfo.upsellRetention[c]*100).toFixed(0) : '')}" placeholder="%" style="width:56px;text-align:right;"></td>`).join('')}</tr>
+        <tr><td style="text-align:left;">フロント</td>${cycleCols.map((c,i)=>`<td class="num"><input type="number" class="ltv-retention-input" data-type="front" data-cycle="${c}" data-tuid="${i+1}" value="${(retentionInfo.frontRetention[c]!=null? (retentionInfo.frontRetention[c]*100).toFixed(0) : '')}" placeholder="%" style="width:56px;text-align:right;"></td>`).join('')}</tr>
+        <tr><td style="text-align:left;">アップセル</td>${cycleCols.map((c,i)=>`<td class="num"><input type="number" class="ltv-retention-input" data-type="upsell" data-cycle="${c}" data-tuid="${cycleCols.length+i+1}" value="${(retentionInfo.upsellRetention[c]!=null? (retentionInfo.upsellRetention[c]*100).toFixed(0) : '')}" placeholder="%" style="width:56px;text-align:right;"></td>`).join('')}</tr>
       </tbody>
     `;
     function ensureMonthRetentionEntry(all){
@@ -2416,8 +2487,13 @@
       }
       return normalized[retentionOfferKey];
     }
+    // Tabキーで次の欄へ自然に移動できるよう、再描画で入力欄のDOMが作り直された後も
+    // フォーカスを「次のtuid」の欄へ手動で戻す（再描画のたびにフォーカスが失われ、
+    // ブラウザ標準のTab移動が上のタブなど無関係な場所に飛んでしまうのを防ぐ）。
+    let ltvSettingsRetentionFocusTuid = null;
     document.querySelectorAll('.ltv-retention-input').forEach(inp=>{
       let t=null;
+      inp.addEventListener('focus', ()=>{ ltvSettingsRetentionFocusTuid = Number(inp.dataset.tuid); });
       function commit(){
         const all = loadLtvSettings();
         const offerEntry = ensureMonthRetentionEntry(all);
@@ -2427,9 +2503,19 @@
         offerEntry[field][inp.dataset.cycle] = isNaN(pctVal) ? 0 : pctVal/100;
         saveLtvSettings(all);
         renderLtvTab();
+        restoreLtvRetentionFocus('.ltv-retention-input', ltvSettingsRetentionFocusTuid);
       }
       inp.addEventListener('input', ()=>{ clearTimeout(t); t=setTimeout(commit, 500); });
       inp.addEventListener('change', ()=>{ clearTimeout(t); commit(); });
+    });
+    document.getElementById('ltvRetentionSetDefaultBtn').addEventListener('click', ()=>{
+      if (!confirm(`今表示中の継続率を、商材「${ltvSelectedCategory}」共通のデフォルト値として保存します。よろしいですか？`)) return;
+      const all = loadLtvSettings();
+      if (!all[ltvSelectedCategory]) all[ltvSelectedCategory] = defaultLtvCategorySettings();
+      all[ltvSelectedCategory].frontRetention = Object.assign({}, retentionInfo.frontRetention);
+      all[ltvSelectedCategory].upsellRetention = Object.assign({}, retentionInfo.upsellRetention);
+      saveLtvSettings(all);
+      renderLtvTab();
     });
     document.getElementById('ltvRetentionPredictBtn').addEventListener('click', ()=>{
       const front = predictRetentionFromPastMonths(ltvSelectedCategory, ltvSelectedMonth, 'frontRetention', retentionOfferKey);
@@ -2459,6 +2545,47 @@
         }
       });
     }
+
+    // ---- 一括貼り付け（1行1つ、1行目=1回目から。今表示中の獲得月・オファーに反映） ----
+    document.getElementById('ltvRetentionPasteArea').innerHTML = `
+      <div class="controls" style="margin-top:12px;">
+        <label style="flex-direction:column;align-items:flex-start;width:100%;">フロント：継続率を一括貼り付け（1行1つ、1行目=1回目から）
+          <textarea id="ltvPasteFront" rows="3" style="width:100%;margin-top:4px;background:var(--bg-panel-2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px;font-family:var(--mono);font-size:12px;" placeholder="100%&#10;54%&#10;53%&#10;..."></textarea>
+        </label>
+        <button class="btn" id="ltvPasteFrontBtn">反映</button>
+      </div>
+      <div class="controls">
+        <label style="flex-direction:column;align-items:flex-start;width:100%;">アップセル：継続率を一括貼り付け
+          <textarea id="ltvPasteUpsell" rows="3" style="width:100%;margin-top:4px;background:var(--bg-panel-2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px;font-family:var(--mono);font-size:12px;" placeholder="100%&#10;80%&#10;..."></textarea>
+        </label>
+        <button class="btn" id="ltvPasteUpsellBtn">反映</button>
+      </div>
+    `;
+    function applyRetentionPaste(type){
+      const textarea = document.getElementById(type==='front' ? 'ltvPasteFront' : 'ltvPasteUpsell');
+      const lines = textarea.value.split('\n').map(l=>l.trim()).filter(Boolean);
+      if (!lines.length) return;
+      const all = loadLtvSettings();
+      const offerEntry = ensureMonthRetentionEntry(all);
+      const field = type==='front' ? 'frontRetention' : 'upsellRetention';
+      if (!offerEntry[field]) offerEntry[field] = {};
+      lines.forEach((line, idx)=>{
+        const cycle = idx + 1; // line1 -> cycle1
+        if (cycle <= 1) return; // cycle1 is always 100%, no need to store
+        const pctVal = Number(line.replace('%','').trim());
+        if (isNaN(pctVal)) return;
+        if (cycle <= LTV_EXPLICIT_CYCLES){
+          offerEntry[field][String(cycle)] = pctVal/100;
+        } else {
+          offerEntry[field]['rest'] = pctVal/100; // last pasted value beyond explicit cycles becomes the "以降" rate
+        }
+      });
+      saveLtvSettings(all);
+      textarea.value = '';
+      renderLtvTab();
+    }
+    document.getElementById('ltvPasteFrontBtn').addEventListener('click', ()=>applyRetentionPaste('front'));
+    document.getElementById('ltvPasteUpsellBtn').addEventListener('click', ()=>applyRetentionPaste('upsell'));
 
     // ---- 追加商品（シークレットコースなど、移行後の商品コード別に個別の継続率・単価・原価を設定） ----
     function renderExtraProducts(){
@@ -4123,6 +4250,46 @@
     reader.readAsArrayBuffer(file);
   }
 
+  // 継続率0%のセル、または「配送周期から見てまだこの回数の実績が出揃っていないはず」
+  // のセルを、デフォルトでチェックを外した状態にする。
+  //   - 完了済みの月: その月の最終日に獲得したと仮定した場合の到達日が今日を過ぎて
+  //     いなければ「まだ生まれていない可能性が高い」としてチェックを外す
+  //   - 進行中の当月: 月内のいつ獲得したかによって実績が生まれているかバラバラで
+  //     数字が安定しないため、その月の回数は一律チェックを外す
+  function estimateCycleDayOffset(intervals, cycle){
+    const sched = cycleScheduleFor(intervals);
+    if (cycle-1 < sched.days.length) return sched.days[cycle-1];
+    const lastDay = sched.days[sched.days.length-1] || 0;
+    const lastInterval = intervals[intervals.length-1] || LTV_DEFAULT_INTERVAL;
+    return lastDay + lastInterval*(cycle - sched.days.length);
+  }
+  function computeSmartDefaultCheckedCells(parsed, months, allCycles, category, offer, type){
+    const checked = new Set();
+    if (!category){
+      // 商材未選択の間は配送周期が分からないため、0%以外は一旦すべてチェックしておく
+      months.forEach(mo=>allCycles.forEach(c=>{ if (parsed[mo][c]!=null && parsed[mo][c]!==0) checked.add(mo+'|'+c); }));
+      return checked;
+    }
+    const intervals = type==='front' ? getLtvIntervals(category, offer).frontIntervals : getLtvIntervals(category, offer).upsellIntervals;
+    const nowMonthKey = currentMonthKey();
+    const today = new Date();
+    months.forEach(mo=>{
+      allCycles.forEach(c=>{
+        const val = parsed[mo][c];
+        if (val == null) return;
+        if (val === 0) return; // 0%は実績未到達の可能性が高いので外す
+        if (mo === nowMonthKey) return; // 当月はまだ月内でバラつきがあるため外す
+        const [y, m] = mo.split('-').map(Number);
+        const monthEndDate = new Date(y, m, 0); // その月の最終日
+        const cycleNum = c==='rest' ? LTV_EXPLICIT_CYCLES+1 : Number(c);
+        const dayOffset = estimateCycleDayOffset(intervals, cycleNum);
+        const maturityDate = new Date(monthEndDate.getTime() + dayOffset*24*60*60*1000);
+        if (today >= maturityDate) checked.add(mo+'|'+c);
+      });
+    });
+    return checked;
+  }
+
   function renderRetentionImportPreview(){
     const area = document.getElementById('ltvRetentionImportArea');
     const state = ltvRetentionImportState;
@@ -4139,9 +4306,12 @@
     const allCycles = Array.from(cycleSet).sort((a,b)=>{
       if (a==='rest') return 1; if (b==='rest') return -1; return Number(a)-Number(b);
     });
-    if (!state.checkedCells){
-      state.checkedCells = new Set();
-      months.forEach(mo=>allCycles.forEach(c=>{ if (state.parsed[mo][c]!=null) state.checkedCells.add(mo+'|'+c); }));
+    // 商材・オファー・種別を切り替えたら配送周期の前提が変わるため、チェック状態を
+    // その組み合わせに合わせて再計算する（手動で切り替えた分は再計算のたびリセットされる）
+    const checkSignature = [state.category, state.offer, state.type].join('|');
+    if (state.checkedCellsSignature !== checkSignature){
+      state.checkedCells = computeSmartDefaultCheckedCells(state.parsed, months, allCycles, state.category, state.offer, state.type);
+      state.checkedCellsSignature = checkSignature;
     }
     const latestMonth = months[months.length-1];
 
@@ -4169,7 +4339,7 @@
         <button class="btn small" id="riPredictLatestBtn">最新月（${escapeHtml(latestMonth)}）を過去の平均で置き換える</button>
         <span style="font-size:11px;color:var(--text-dim);">当月はまだ2回目以降が出荷されていないことが多く、そのまま反映すると低い継続率になってしまう場合に使ってください。</span>
       </div>
-      <div style="font-size:11px;color:var(--text-dim);margin-top:6px;">各セルのチェックを外すと、その年月・その回数だけ反映対象から外せます（例：2026年6月の2回目だけ反映したい、など）。</div>
+      <div style="font-size:11px;color:var(--text-dim);margin-top:6px;">各セルのチェックを外すと、その年月・その回数だけ反映対象から外せます（例：2026年6月の2回目だけ反映したい、など）。<br>継続率が0%のセルと、選択中の商材・オファーのお届け頻度から見てまだ実績が出揃っていないはずのセル（当月分や、配送周期的に間に合っていない過去分）は、自動でチェックを外しています。必要に応じて手動でオン/オフしてください。</div>
       <div class="table-wrap">
         <table class="data">
           <thead>
@@ -4201,8 +4371,8 @@
     `;
 
     document.getElementById('riCategory').addEventListener('change', (e)=>{ state.category = e.target.value; state.offer=''; renderRetentionImportPreview(); });
-    document.getElementById('riOffer').addEventListener('change', (e)=>{ state.offer = e.target.value; });
-    document.getElementById('riType').addEventListener('change', (e)=>{ state.type = e.target.value; });
+    document.getElementById('riOffer').addEventListener('change', (e)=>{ state.offer = e.target.value; renderRetentionImportPreview(); });
+    document.getElementById('riType').addEventListener('change', (e)=>{ state.type = e.target.value; renderRetentionImportPreview(); });
     document.querySelectorAll('.ri-cell-check').forEach(cb=>{
       cb.addEventListener('change', ()=>{
         if (cb.checked) state.checkedCells.add(cb.dataset.cell);
