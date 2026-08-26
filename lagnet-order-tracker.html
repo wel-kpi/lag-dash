@@ -563,7 +563,8 @@
 
     <div class="panel">
       <h2>継続率設定（商材: <span id="ltvRetentionSettingsCategoryLabel"></span>）</h2>
-      <div class="note-box" id="ltvRetentionSettingsAllNote" style="display:none;">「すべて」を選んでいる間は継続率を編集できません。商材タブで個別の商材を選んでください。</div>
+      <div class="note-box" id="ltvRetentionSettingsAllNote" style="display:none;">「すべて」を選んでいる間は継続率を編集できません（商材タブで個別の商材を選ぶと編集できます）。参考として、各商材の継続率の平均を表示しています。</div>
+      <div id="ltvRetentionAllSummary"></div>
       <div id="ltvRetentionSettingsBody">
         <div id="ltvRetentionNote"></div>
         <div class="table-wrap"><table class="data" id="ltvRetentionTable"></table></div>
@@ -573,7 +574,8 @@
 
     <div class="panel">
       <h2>設定（商材: <span id="ltvSettingsCategoryLabel"></span>）</h2>
-      <div class="note-box" id="ltvSettingsAllNote" style="display:none;">「すべて」を選んでいる間は、商材ごとの単価・原価・継続率・お届け頻度の設定は編集できません。商材タブで個別の商材を選んでください。</div>
+      <div class="note-box" id="ltvSettingsAllNote" style="display:none;">「すべて」を選んでいる間は、商材ごとの単価・原価・継続率・お届け頻度の設定は編集できません（商材タブで個別の商材を選ぶと編集できます）。参考として、各商材の単価・原価の平均・合計を表示しています。</div>
+      <div id="ltvSettingsAllSummary"></div>
       <div id="ltvSettingsBody">
         <h3 style="font-size:12.5px;color:var(--text-dim);margin:0 0 10px;">お届け頻度</h3>
         <div id="ltvIntervalSettings"></div>
@@ -777,7 +779,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "3.19.1";
+  const APP_VERSION = "3.20.1";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -2418,6 +2420,70 @@
       document.getElementById('ltvRetentionSettingsBody').style.display = 'none';
       document.getElementById('ltvRetentionSettingsAllNote').style.display = '';
       renderLtvGlobalSettings();
+
+      // ---- 「すべて」向け参考サマリー: 各商材の単価・原価の平均/合計、継続率の平均 ----
+      const realCategories = allCategories.filter(c=>c);
+      const catSettingsList = realCategories.map(c=>getLtvCategorySettings(c));
+
+      const priceCogsKeys = [
+        { key:'frontPriceFirst', label:'フロント初回単価' },
+        { key:'frontPriceRepeat', label:'フロント継続単価' },
+        { key:'upsellPriceFirst', label:'アップセル初回単価' },
+        { key:'upsellPriceRepeat', label:'アップセル継続単価' },
+        { key:'frontCogsFirst', label:'フロント初回原価' },
+        { key:'frontCogsRepeat', label:'フロント継続原価' },
+        { key:'upsellCogsFirst', label:'アップセル初回原価' },
+        { key:'upsellCogsRepeat', label:'アップセル継続原価' }
+      ];
+      document.getElementById('ltvSettingsAllSummary').innerHTML = realCategories.length ? `
+        <div class="table-wrap">
+          <table class="data">
+            <thead><tr><th>項目</th><th class="num">平均(円)</th><th class="num">合計(円)</th><th class="num">対象商材数</th></tr></thead>
+            <tbody>${priceCogsKeys.map(k=>{
+              const vals = catSettingsList.map(s=>Number(s[k.key])||0).filter(v=>v>0);
+              const sum = vals.reduce((a,b)=>a+b,0);
+              const avg = vals.length ? sum/vals.length : 0;
+              return `<tr><td style="text-align:left;">${k.label}</td><td class="num">${vals.length?fmtYen(Math.round(avg)):'—'}</td><td class="num">${vals.length?fmtYen(sum):'—'}</td><td class="num">${vals.length}/${realCategories.length}</td></tr>`;
+            }).join('')}</tbody>
+          </table>
+        </div>
+      ` : '<div class="empty-note">まだ商材ごとの設定がありません</div>';
+
+      // 継続率の平均（獲得月・オファーの区別なく、各商材が実際に持っている値を平均）
+      const cycleColsAll = [];
+      for (let c=2;c<=LTV_EXPLICIT_CYCLES;c++) cycleColsAll.push(String(c));
+      cycleColsAll.push('rest');
+      function averageRetentionAcrossCategories(field){
+        const sums = {}, counts = {};
+        realCategories.forEach(cat=>{
+          const info = getLtvRetention(cat, ltvSelectedMonth, ltvSelectedOffer||'');
+          const ret = info[field] || {};
+          Object.keys(ret).forEach(c=>{
+            const v = Number(ret[c]);
+            if (isNaN(v)) return;
+            sums[c] = (sums[c]||0)+v;
+            counts[c] = (counts[c]||0)+1;
+          });
+        });
+        const avg = {};
+        Object.keys(sums).forEach(c=>{ avg[c] = sums[c]/counts[c]; });
+        return { avg, counts };
+      }
+      const frontAvg = averageRetentionAcrossCategories('frontRetention');
+      const upsellAvg = averageRetentionAcrossCategories('upsellRetention');
+      document.getElementById('ltvRetentionAllSummary').innerHTML = realCategories.length ? `
+        <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px;">獲得月「${escapeHtml(ltvSelectedMonth)}」時点で各商材に設定されている継続率の平均です（商材ごとに値が無い回数は平均の対象外）。</div>
+        <div class="table-wrap">
+          <table class="data">
+            <thead><tr><th>種別</th>${cycleColsAll.map(c=>`<th class="num">${c==='rest'?`${LTV_EXPLICIT_CYCLES+1}回目以降`:c+'回目'}</th>`).join('')}</tr></thead>
+            <tbody>
+              <tr><td style="text-align:left;">フロント平均</td>${cycleColsAll.map(c=>`<td class="num">${frontAvg.avg[c]!=null?(frontAvg.avg[c]*100).toFixed(0)+'%':'—'}</td>`).join('')}</tr>
+              <tr><td style="text-align:left;">アップセル平均</td>${cycleColsAll.map(c=>`<td class="num">${upsellAvg.avg[c]!=null?(upsellAvg.avg[c]*100).toFixed(0)+'%':'—'}</td>`).join('')}</tr>
+            </tbody>
+          </table>
+        </div>
+      ` : '<div class="empty-note">まだ商材ごとの継続率がありません</div>';
+
       return;
     }
     document.getElementById('ltvSettingsBody').style.display = '';
@@ -4893,6 +4959,15 @@
 
   renderAll();
   if (loadSyncUrl()) pullAndMergeAll();
+  // 広告費スプレッドシートの自動取込を、以前は「データ管理」タブを開いた時だけ
+  // 行っていたが、ページを開いた時点ですぐに最新化されるようにする
+  (function autoFetchBudgetOnLoad(){
+    const cfg = loadSheetConfig();
+    if (cfg.url){
+      document.getElementById('sheetUrl').value = cfg.url;
+      handleSheetFetch(true);
+    }
+  })();
 })();
 </script>
 </body>
