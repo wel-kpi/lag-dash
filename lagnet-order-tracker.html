@@ -777,7 +777,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "3.19.0";
+  const APP_VERSION = "3.19.1";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -2079,11 +2079,18 @@
     }
 
     // 獲得月（進捗・着地想定の基準にする月）。デフォルトは当月、過去の月も選べる。
-    const monthOptions = [];
+    // 直近7ヶ月分は常に表示しつつ、それより古くても実際に継続率データが入って
+    // いる月があれば、埋もれてしまわないようタブに追加する。
+    const monthOptionsSet = new Set();
     for (let i=0;i<7;i++){
       const d = new Date(); d.setDate(1); d.setMonth(d.getMonth()-i);
-      monthOptions.push(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`);
+      monthOptionsSet.add(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`);
     }
+    const allLtvSettings = loadLtvSettings();
+    Object.values(allLtvSettings).forEach(catSettings=>{
+      Object.keys(catSettings.retentionByMonth || {}).forEach(mo=>monthOptionsSet.add(mo));
+    });
+    const monthOptions = Array.from(monthOptionsSet).sort((a,b)=>b.localeCompare(a)); // 新しい月が先頭
     if (!ltvSelectedMonth) ltvSelectedMonth = currentMonthKey();
     document.getElementById('ltvMonthTabs').innerHTML = monthOptions.map(mo=>{
       const label = mo===currentMonthKey() ? `${mo}（当月）` : mo;
