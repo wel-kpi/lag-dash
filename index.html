@@ -554,6 +554,15 @@
     </div>
 
     <div class="panel">
+      <h2>継続率設定（商材: <span id="ltvRetentionSettingsCategoryLabel"></span>）</h2>
+      <div class="note-box" id="ltvRetentionSettingsAllNote" style="display:none;">「すべて」を選んでいる間は継続率を編集できません。商材タブで個別の商材を選んでください。</div>
+      <div id="ltvRetentionSettingsBody">
+        <div id="ltvRetentionNote"></div>
+        <div class="table-wrap"><table class="data" id="ltvRetentionTable"></table></div>
+      </div>
+    </div>
+
+    <div class="panel">
       <h2>設定（商材: <span id="ltvSettingsCategoryLabel"></span>）</h2>
       <div class="note-box" id="ltvSettingsAllNote" style="display:none;">「すべて」を選んでいる間は、商材ごとの単価・原価・継続率・お届け頻度の設定は編集できません。商材タブで個別の商材を選んでください。</div>
       <div id="ltvSettingsBody">
@@ -562,11 +571,6 @@
 
         <h3 style="font-size:12.5px;color:var(--text-dim);margin:20px 0 10px;">単価・原価（円）</h3>
         <div class="table-wrap"><table class="data" id="ltvPriceCogsTable"></table></div>
-
-        <h3 style="font-size:12.5px;color:var(--text-dim);margin:20px 0 10px;">継続率（%）</h3>
-        <div id="ltvRetentionNote"></div>
-        <div class="table-wrap"><table class="data" id="ltvRetentionTable"></table></div>
-        <div id="ltvRetentionPasteArea"></div>
 
         <h3 style="font-size:12.5px;color:var(--text-dim);margin:20px 0 10px;">追加商品（シークレットコースなど、移行後の商品コード別）<span style="font-weight:400;">— 売上に上乗せされます</span></h3>
         <div id="ltvExtraProductsArea"></div>
@@ -749,7 +753,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "3.14.0";
+  const APP_VERSION = "3.15.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -1972,6 +1976,7 @@
       renderLtvTab();
     });
     document.getElementById('ltvSettingsCategoryLabel').textContent = ltvSelectedCategory || 'すべて';
+    document.getElementById('ltvRetentionSettingsCategoryLabel').textContent = ltvSelectedCategory || 'すべて';
 
     if (!allCategories.length){
       ['ltvProgressKpis','ltvLandingKpis'].forEach(id=>{ document.getElementById(id).innerHTML = '<div class="empty-note">受注データがありません</div>'; });
@@ -2144,7 +2149,7 @@
     function costCellHtml(rowKey, cost){
       return `
         <td class="num" style="background:var(--danger-soft);">
-          <button type="button" class="ltv-cost-toggle" data-row="${rowKey}" style="background:none;border:none;color:var(--text);${moneyStyle(cost)}cursor:pointer;font:inherit;text-decoration:underline dotted;padding:0;">${fmtYen(cost)}</button>
+          <button type="button" class="ltv-cost-toggle" data-row="${rowKey}" tabindex="-1" style="background:none;border:none;color:var(--text);${moneyStyle(cost)}cursor:pointer;font:inherit;text-decoration:underline dotted;padding:0;">${fmtYen(cost)}</button>
         </td>
       `;
     }
@@ -2194,7 +2199,7 @@
       if (!(originalKey in ltvRetentionSessionOriginals)) ltvRetentionSessionOriginals[originalKey] = pct;
       currentRenderRetentionKeys.push({ type, cycleKey, original: ltvRetentionSessionOriginals[originalKey] });
       return `<td class="num" style="padding-right:16px;">
-        <input type="number" class="ltv-inline-retention" data-type="${type}" data-cycle="${cycleKey}" value="${pct}" style="width:44px;text-align:right;">%
+        <input type="number" class="ltv-inline-retention" data-type="${type}" data-cycle="${cycleKey}" value="${pct}" style="width:56px;text-align:right;">%
       </td>`;
     }
 
@@ -2285,11 +2290,15 @@
     if (!ltvSelectedCategory){
       document.getElementById('ltvSettingsBody').style.display = 'none';
       document.getElementById('ltvSettingsAllNote').style.display = '';
+      document.getElementById('ltvRetentionSettingsBody').style.display = 'none';
+      document.getElementById('ltvRetentionSettingsAllNote').style.display = '';
       renderLtvGlobalSettings();
       return;
     }
     document.getElementById('ltvSettingsBody').style.display = '';
     document.getElementById('ltvSettingsAllNote').style.display = 'none';
+    document.getElementById('ltvRetentionSettingsBody').style.display = '';
+    document.getElementById('ltvRetentionSettingsAllNote').style.display = 'none';
 
     // ---- settings: price / cogs table ----
     const s = getLtvCategorySettings(ltvSelectedCategory);
@@ -2402,47 +2411,6 @@
         }
       });
     }
-
-    // ---- bulk-paste retention (one % per line, in order starting from cycle1) — also applies to this 獲得月 only ----
-    document.getElementById('ltvRetentionPasteArea').innerHTML = `
-      <div class="controls" style="margin-top:12px;">
-        <label style="flex-direction:column;align-items:flex-start;width:100%;">フロント：継続率を一括貼り付け（1行1つ、1行目=1回目から）
-          <textarea id="ltvPasteFront" rows="3" style="width:100%;margin-top:4px;background:var(--bg-panel-2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px;font-family:var(--mono);font-size:12px;" placeholder="100%&#10;54%&#10;53%&#10;..."></textarea>
-        </label>
-        <button class="btn" id="ltvPasteFrontBtn">反映</button>
-      </div>
-      <div class="controls">
-        <label style="flex-direction:column;align-items:flex-start;width:100%;">アップセル：継続率を一括貼り付け
-          <textarea id="ltvPasteUpsell" rows="3" style="width:100%;margin-top:4px;background:var(--bg-panel-2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px;font-family:var(--mono);font-size:12px;" placeholder="100%&#10;80%&#10;..."></textarea>
-        </label>
-        <button class="btn" id="ltvPasteUpsellBtn">反映</button>
-      </div>
-    `;
-    function applyRetentionPaste(type){
-      const textarea = document.getElementById(type==='front' ? 'ltvPasteFront' : 'ltvPasteUpsell');
-      const lines = textarea.value.split('\n').map(l=>l.trim()).filter(Boolean);
-      if (!lines.length) return;
-      const all = loadLtvSettings();
-      const monthEntry = ensureMonthRetentionEntry(all);
-      const field = type==='front' ? 'frontRetention' : 'upsellRetention';
-      if (!monthEntry[field]) monthEntry[field] = {};
-      lines.forEach((line, idx)=>{
-        const cycle = idx + 1; // line1 -> cycle1
-        if (cycle <= 1) return; // cycle1 is always 100%, no need to store
-        const pctVal = Number(line.replace('%','').trim());
-        if (isNaN(pctVal)) return;
-        if (cycle <= LTV_EXPLICIT_CYCLES){
-          monthEntry[field][String(cycle)] = pctVal/100;
-        } else {
-          monthEntry[field]['rest'] = pctVal/100; // last pasted value beyond explicit cycles becomes the "以降" rate
-        }
-      });
-      saveLtvSettings(all);
-      textarea.value = '';
-      renderLtvTab();
-    }
-    document.getElementById('ltvPasteFrontBtn').addEventListener('click', ()=>applyRetentionPaste('front'));
-    document.getElementById('ltvPasteUpsellBtn').addEventListener('click', ()=>applyRetentionPaste('upsell'));
 
     // ---- 追加商品（シークレットコースなど、移行後の商品コード別に個別の継続率・単価・原価を設定） ----
     function renderExtraProducts(){
@@ -4138,7 +4106,7 @@
       </div>
       <div class="controls">
         <button class="btn small" id="riPredictLatestBtn">最新月（${escapeHtml(latestMonth)}）を過去の平均で置き換える</button>
-        <span class="n">当月はまだ2回目以降が出荷されていないことが多く、そのまま反映すると低い継続率になってしまう場合に使ってください。</span>
+        <span style="font-size:11px;color:var(--text-dim);">当月はまだ2回目以降が出荷されていないことが多く、そのまま反映すると低い継続率になってしまう場合に使ってください。</span>
       </div>
       <div style="font-size:11px;color:var(--text-dim);margin-top:6px;">各セルのチェックを外すと、その年月・その回数だけ反映対象から外せます（例：2026年6月の2回目だけ反映したい、など）。</div>
       <div class="table-wrap">
