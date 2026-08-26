@@ -650,7 +650,22 @@
         <div class="hint">Shift-JIS / UTF-8 自動判定・同一注文行は自動で更新（重複追加なし）</div>
         <input type="file" id="fileInput" accept=".csv">
       </div>
+      <label style="display:flex;align-items:center;gap:6px;margin-top:10px;font-size:12px;color:var(--text-dim);">
+        <input type="checkbox" id="replaceMonthCheckbox">
+        このCSVに含まれる月の既存データを丸ごと置き換えてから取り込む（広告URLグループ名をecforce側で変更した後などにチェック）
+      </label>
       <div id="uploadResult"></div>
+    </div>
+    <div class="panel">
+      <h2>受注データのグループ別削除<span class="n">（グループ名変更後に残った旧データの掃除など）</span></h2>
+      <div class="note-box">
+        ecforce側で広告URLグループ名を変更してから再アップロードすると、旧グループ名のままだったデータは自動では消えず重複して残ります。旧グループ名を指定して削除してください。
+      </div>
+      <div class="inline-form">
+        <label>広告URLグループ名 <select id="deleteGroupSelect" style="width:320px;"><option value="">選択してください</option></select></label>
+        <button class="btn danger" id="deleteGroupBtn" disabled>このグループの受注データを全削除</button>
+        <span class="n" id="deleteGroupStatus"></span>
+      </div>
     </div>
     <div class="panel">
       <h2>表示設定<span class="n">（この端末だけの見た目の設定・データには影響しません）</span></h2>
@@ -753,7 +768,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "3.15.0";
+  const APP_VERSION = "3.17.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -1186,16 +1201,31 @@
     };
   }
 
-  function ingestCSV(text, filename){
+  function ingestCSV(text, filename, replaceMonths){
     const rows = parseCSV(text);
     const objs = rowsToObjects(rows);
-    const existing = loadRecords();
-    const map = {};
-    existing.forEach(r => { map[r.id] = r; });
-    let added = 0, updated = 0, skipped = 0;
-    objs.forEach(row => {
+    let existing = loadRecords();
+    const newRecords = [];
+    let skipped = 0;
+    objs.forEach(row=>{
       const rec = buildRecord(row);
       if (!rec){ skipped++; return; }
+      newRecords.push(rec);
+    });
+
+    // 「この月のデータを丸ごと置き換える」が有効な場合、アップロードされた行が
+    // 属する月の既存データを先に全部消してから取り込む。広告URLグループ名を
+    // ecforce側で変更した場合など、重複判定キーが変わって旧データが残ってしまう
+    // ケースをこれで防げる。
+    if (replaceMonths){
+      const monthsInUpload = new Set(newRecords.map(r=>r.month));
+      existing = existing.filter(r => !monthsInUpload.has(r.month));
+    }
+
+    const map = {};
+    existing.forEach(r => { map[r.id] = r; });
+    let added = 0, updated = 0;
+    newRecords.forEach(rec => {
       if (map[rec.id]) updated++; else added++;
       map[rec.id] = rec;
     });
@@ -1209,6 +1239,16 @@
     });
     saveHistory(hist.slice(0, 50));
     return { added, updated, skipped, total: merged.length };
+  }
+
+  // 受注データを特定の広告URLグループ名で一括削除する（ecforce側でグループ名を
+  // 変更した際、旧グループ名のまま残ってしまった重複データの掃除などに使う）
+  function deleteRecordsByGroup(groupName){
+    const records = loadRecords();
+    const filtered = records.filter(r => r.group !== groupName);
+    const removedCount = records.length - filtered.length;
+    saveRecords(filtered);
+    return removedCount;
   }
 
   // ---------- demographics (性別・生年月日・都道府県) ----------
@@ -1425,8 +1465,15 @@
   let ltvSelectedScenario = 'progress';
   let ltvSelectedOffer = '';
 
+  // 商材タブの表示順序（指定の並びを優先し、リストに無い商材は末尾にアルファベット順で追加）
+  const CATEGORY_DISPLAY_ORDER = ['練り香水','ヘッドスクラブ','サプリ','バブルスクラブ','ゼノス','広告経由なし','その他'];
+  function sortCategoriesForDisplay(categories){
+    const known = CATEGORY_DISPLAY_ORDER.filter(c=>categories.includes(c));
+    const unknown = categories.filter(c=>!CATEGORY_DISPLAY_ORDER.includes(c)).sort();
+    return known.concat(unknown);
+  }
   function renderCatTabs(containerEl, categories, current, onSelect){
-    const items = [''].concat(categories);
+    const items = [''].concat(sortCategoriesForDisplay(categories));
     containerEl.innerHTML = items.map(cat=>{
       const label = cat === '' ? 'すべて' : cat;
       const color = cat === '' ? 'var(--text-dim)' : categoryColorVar(cat);
@@ -1967,9 +2014,9 @@
     const records = loadRecords();
     const allCategories = uniqueSorted(records.map(r=>r.category));
     if (ltvSelectedCategory === null){
-      ltvSelectedCategory = allCategories[0] || '';
+      ltvSelectedCategory = ''; // デフォルトは「すべて」
     } else if (ltvSelectedCategory && !allCategories.includes(ltvSelectedCategory)){
-      ltvSelectedCategory = allCategories[0] || '';
+      ltvSelectedCategory = '';
     }
     renderCatTabs(document.getElementById('ltvCatTabs'), allCategories, ltvSelectedCategory, (cat)=>{
       ltvSelectedCategory = cat; // '' is a valid, genuine "すべて" selection — no fallback here
@@ -2187,7 +2234,7 @@
     // 複数の回数が同じ月に重なる場合（お届け間隔が短い等）は編集対象が曖昧になるため
     // 参考表示のみに留める。
     const currentRenderRetentionKeys = []; // collected while rendering, used by the single "reset all" button below
-    function retentionCellHtml(rates, type){
+    function retentionCellHtml(rates, type, tabIdx){
       if (!rates.length) return `<td class="num">—</td>`;
       if (rates.length > 1){
         return `<td class="num">${rates.map(x=>(x.rate*100).toFixed(0)+'%').join(', ')}</td>`;
@@ -2199,7 +2246,7 @@
       if (!(originalKey in ltvRetentionSessionOriginals)) ltvRetentionSessionOriginals[originalKey] = pct;
       currentRenderRetentionKeys.push({ type, cycleKey, original: ltvRetentionSessionOriginals[originalKey] });
       return `<td class="num" style="padding-right:16px;">
-        <input type="number" class="ltv-inline-retention" data-type="${type}" data-cycle="${cycleKey}" value="${pct}" style="width:56px;text-align:right;">%
+        <input type="number" class="ltv-inline-retention" data-type="${type}" data-cycle="${cycleKey}" value="${pct}" tabindex="${tabIdx}" style="width:56px;text-align:right;">%
       </td>`;
     }
 
@@ -2243,13 +2290,14 @@
         const rowKey = 'm'+r.month+'-'+idx;
         const colspanBefore = 1 + 4 + (hasExtraProducts?1:0) + 1 + 1; // ヶ月目 + フロント2 + アップセル2 + (追加商品) + 合計件数 + 売上
         const colspanAfter = 1; // 利益
+        const totalRows = activeSim.rows.length;
         return `
         <tr>
           <td>${r.month}ヶ月目</td>
           <td class="num">${r.frontCount>0?fmtNum(Math.round(r.frontCount)):'—'}</td>
-          ${retentionCellHtml(r.frontRates, 'front')}
+          ${retentionCellHtml(r.frontRates, 'front', idx+1)}
           <td class="num">${r.upsellCount>0?fmtNum(Math.round(r.upsellCount)):'—'}</td>
-          ${retentionCellHtml(r.upsellRates, 'upsell')}
+          ${retentionCellHtml(r.upsellRates, 'upsell', totalRows+idx+1)}
           ${hasExtraProducts?`<td class="num">${r.extraCount>0?fmtNum(Math.round(r.extraCount)):'—'}</td>`:''}
           <td class="num">${fmtNum(Math.round(r.orders))}</td>
           <td class="num" style="background:var(--blue-soft);${moneyStyle(r.revenue)}">${fmtYen(r.revenue)}</td>
@@ -3806,6 +3854,19 @@
     budgetFilterGroupState = e.target.value;
     renderBudgetTable();
   });
+  document.getElementById('deleteGroupSelect').addEventListener('change', (e)=>{
+    document.getElementById('deleteGroupBtn').disabled = !e.target.value;
+  });
+  document.getElementById('deleteGroupBtn').addEventListener('click', ()=>{
+    const sel = document.getElementById('deleteGroupSelect');
+    const group = sel.value;
+    if (!group) return;
+    if (!confirm(`広告URLグループ「${group}」の受注データを全て削除します。よろしいですか？（元に戻せません）`)) return;
+    const removed = deleteRecordsByGroup(group);
+    document.getElementById('deleteGroupStatus').textContent = `${removed}件削除しました`;
+    renderAll();
+    pushKey('records');
+  });
   document.getElementById('sheetParseBtn').addEventListener('click', handlePasteParse);
 
   document.getElementById('syncSaveBtn').addEventListener('click', ()=>{
@@ -4392,12 +4453,25 @@
     document.getElementById('totalRecordsLabel').textContent = `合計 ${fmtNum(loadRecords().length)} 件のレコードを保存中`;
   }
 
+  function renderDeleteGroupSelect(){
+    const sel = document.getElementById('deleteGroupSelect');
+    const records = loadRecords();
+    const groupCounts = {};
+    records.forEach(r=>{ if (r.group) groupCounts[r.group] = (groupCounts[r.group]||0)+1; });
+    const groups = Object.keys(groupCounts).sort((a,b)=>groupCounts[b]-groupCounts[a]);
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">選択してください</option>' +
+      groups.map(g=>`<option value="${escapeHtml(g)}" ${g===cur?'selected':''}>${escapeHtml(g)} (${fmtNum(groupCounts[g])}件)</option>`).join('');
+    document.getElementById('deleteGroupBtn').disabled = !sel.value;
+  }
+
   function handleFile(file){
     const reader = new FileReader();
     reader.onload = function(e){
       const text = decodeBuffer(e.target.result);
       try{
-        const result = ingestCSV(text, file.name);
+        const replaceMonths = document.getElementById('replaceMonthCheckbox').checked;
+        const result = ingestCSV(text, file.name, replaceMonths);
         document.getElementById('uploadResult').innerHTML = `
           <div class="panel" style="margin-top:12px;background:var(--good-soft);border-color:var(--good);">
             <strong>取り込み完了:</strong> 新規 ${fmtNum(result.added)}件 / 更新 ${fmtNum(result.updated)}件${result.skipped?` / スキップ ${fmtNum(result.skipped)}件`:''}
@@ -4440,6 +4514,7 @@
     renderReport();
     renderCostTab();
     renderHistory();
+    renderDeleteGroupSelect();
     renderMediaMapTable();
     renderLastUpdatesMeta();
   }
