@@ -784,7 +784,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "3.25.0";
+  const APP_VERSION = "3.25.1";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -1005,10 +1005,28 @@
   };
   const SYNC_KEYS = Object.keys(SYNC_KEY_TO_STORAGE_KEY);
 
+  // どのキーが「配列」で、どのキーが「オブジェクト（連想配列）」であるべきかを定義。
+  // サーバー側のデータが何らかの理由で壊れていた場合（想定外の型になっていた場合）
+  // に、その壊れた値をそのまま端末に取り込んでしまわないようにするため。
+  const SYNC_ARRAY_KEYS = new Set(['records','dailyBudget','history','mediaMapHistory']);
+  const SYNC_OBJECT_KEYS = new Set(['groupSettings','mediaMap','ltvSettings','ltvGlobal']);
+  function isValidSyncShape(key, val){
+    if (SYNC_ARRAY_KEYS.has(key)) return Array.isArray(val);
+    if (SYNC_OBJECT_KEYS.has(key)) return val != null && typeof val === 'object' && !Array.isArray(val);
+    return true; // other keys (demographicsMeta, sheetConfig 等) have no fixed shape requirement here
+  }
+
   // Merge strategy per data type. Arrays with a unique `id` are merged by upsert
   // (local wins per-id since it reflects the most recent edit on this device);
   // plain objects (keyed maps) are shallow-merged the same way.
   function mergeForKey(key, serverVal, localVal){
+    // 型が想定と違う（壊れている）場合は、その壊れた側を無視してもう片方を使う。
+    // 両方壊れている場合は諦めて null を返す（呼び出し側で「更新しない」扱いになる）。
+    const serverOk = isValidSyncShape(key, serverVal);
+    const localOk = isValidSyncShape(key, localVal);
+    if (!serverOk && !localOk) return null;
+    if (!serverOk) return localVal;
+    if (!localOk) return serverVal;
     if (serverVal == null) return localVal;
     if (localVal == null) return serverVal;
     switch(key){
@@ -1023,8 +1041,8 @@
           return t ? new Date(t).getTime() : 0;
         }
         const map = {};
-        (serverVal||[]).forEach(x=>{ if (x && x.id) map[x.id]=x; });
-        (localVal||[]).forEach(x=>{
+        (Array.isArray(serverVal) ? serverVal : []).forEach(x=>{ if (x && x.id) map[x.id]=x; });
+        (Array.isArray(localVal) ? localVal : []).forEach(x=>{
           if (!x || !x.id) return;
           const existing = map[x.id];
           if (!existing){ map[x.id]=x; return; }
@@ -1034,8 +1052,8 @@
       }
       case 'dailyBudget': {
         const map = {};
-        (serverVal||[]).forEach(x=>{ if (x && x.id) map[x.id]=x; });
-        (localVal||[]).forEach(x=>{
+        (Array.isArray(serverVal) ? serverVal : []).forEach(x=>{ if (x && x.id) map[x.id]=x; });
+        (Array.isArray(localVal) ? localVal : []).forEach(x=>{
           if (!x || !x.id) return;
           const existing = map[x.id];
           if (existing && existing.deleted && !x.deleted) return; // stay deleted
@@ -1045,8 +1063,8 @@
       }
       case 'mediaMapHistory': {
         const map = {};
-        (serverVal||[]).forEach(x=>{ if (x && x.id) map[x.id]=x; });
-        (localVal||[]).forEach(x=>{
+        (Array.isArray(serverVal) ? serverVal : []).forEach(x=>{ if (x && x.id) map[x.id]=x; });
+        (Array.isArray(localVal) ? localVal : []).forEach(x=>{
           if (!x || !x.id) return;
           const existing = map[x.id];
           // once undone, stay undone regardless of which side is "newer"
@@ -1056,10 +1074,10 @@
         return Object.values(map).sort((a,b)=> new Date(b.timestamp)-new Date(a.timestamp)).slice(0,50);
       }
       case 'history': {
-        const keyOf = h => (h.uploadedAt||'') + '|' + (h.filename||'');
+        const keyOf = h => (h && h.uploadedAt||'') + '|' + (h && h.filename||'');
         const map = {};
-        (serverVal||[]).forEach(x=>{ map[keyOf(x)]=x; });
-        (localVal||[]).forEach(x=>{ map[keyOf(x)]=x; });
+        (Array.isArray(serverVal) ? serverVal : []).forEach(x=>{ if (x) map[keyOf(x)]=x; });
+        (Array.isArray(localVal) ? localVal : []).forEach(x=>{ if (x) map[keyOf(x)]=x; });
         return Object.values(map).sort((a,b)=> new Date(b.uploadedAt)-new Date(a.uploadedAt)).slice(0,50);
       }
       case 'groupSettings':
@@ -1105,15 +1123,29 @@
     try{
       const res = await fetchWithRetry(url, { method: 'GET' });
       const serverData = await res.json();
+      const failedKeys = [];
       SYNC_KEYS.forEach(key=>{
-        const storageKey = SYNC_KEY_TO_STORAGE_KEY[key];
-        let localVal = null;
-        try{ localVal = JSON.parse(localStorage.getItem(storageKey) || 'null'); }catch(e){}
-        const merged = mergeForKey(key, serverData[key], localVal);
-        if (merged != null) localStorage.setItem(storageKey, JSON.stringify(merged));
+        // 1つの項目のマージで何か問題が起きても、他の項目の同期が巻き添えで
+        // 止まらないように、キーごとに個別にエラーを吸収する（以前はここが
+        // 1つの try/catch でまとめられていたため、records の同期でエラーが
+        // 起きると継続率などそれ以降の項目が一切同期されなくなる不具合があった）
+        try{
+          const storageKey = SYNC_KEY_TO_STORAGE_KEY[key];
+          let localVal = null;
+          try{ localVal = JSON.parse(localStorage.getItem(storageKey) || 'null'); }catch(e){}
+          const merged = mergeForKey(key, serverData[key], localVal);
+          if (merged != null) localStorage.setItem(storageKey, JSON.stringify(merged));
+        }catch(keyErr){
+          failedKeys.push(key);
+          console.error('sync merge failed for key:', key, keyErr);
+        }
       });
       localStorage.setItem(SYNC_LAST_KEY, new Date().toISOString());
-      setSyncStatus('ok');
+      if (failedKeys.length){
+        setSyncStatus('error', `一部のデータの同期に失敗しました（${failedKeys.join(', ')}）。他のデータは正常に同期されています。`);
+      } else {
+        setSyncStatus('ok');
+      }
       renderAll();
     }catch(err){
       setSyncStatus('error', err.message || 'Failed to fetch');
