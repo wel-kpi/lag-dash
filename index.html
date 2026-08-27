@@ -583,7 +583,8 @@
         <h3 style="font-size:12.5px;color:var(--text-dim);margin:20px 0 10px;">単価・原価（円）</h3>
         <div class="table-wrap"><table class="data" id="ltvPriceCogsTable"></table></div>
 
-        <h3 style="font-size:12.5px;color:var(--text-dim);margin:20px 0 10px;">追加商品（シークレットコースなど、移行後の商品コード別）<span style="font-weight:400;">— 売上に上乗せされます</span></h3>
+        <h3 style="font-size:12.5px;color:var(--text-dim);margin:20px 0 10px;">追加商品（シークレットコースなど、移行後の商品コード別）<span style="font-weight:400;">— オファー単位で設定、売上に上乗せされます</span></h3>
+        <div id="ltvExtraProductsNote"></div>
         <div id="ltvExtraProductsArea"></div>
         <div class="controls" style="margin-top:8px;">
           <button class="btn" id="ltvExtraProductAddBtn">＋ 追加商品を登録</button>
@@ -779,7 +780,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "3.23.0";
+  const APP_VERSION = "3.24.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -1271,7 +1272,7 @@
   function ingestCSV(text, filename, replaceMonths){
     const rows = parseCSV(text);
     const objs = rowsToObjects(rows);
-    let existing = loadRecords();
+    const existingActive = loadRecords();
     const newRecords = [];
     let skipped = 0;
     objs.forEach(row=>{
@@ -1281,31 +1282,48 @@
     });
 
     // 「この月のデータを丸ごと置き換える」が有効な場合、アップロードされた行が
-    // 属する月の既存データを先に全部消してから取り込む。広告URLグループ名を
-    // ecforce側で変更した場合など、重複判定キーが変わって旧データが残ってしまう
-    // ケースをこれで防げる。
+    // 属する月の既存データのうち、今回のアップロードに含まれないものを tombstone
+    // （削除済みの目印）付きで除外する。ここを「配列から単純に外す」だけにすると、
+    // 削除という事実が他端末に伝わらず、その端末側にまだ残っている古いデータが
+    // 同期のたびに復活してしまう（実際に起きた不具合）。
+    let baseActive = existingActive;
+    let tombstonesFromReplace = [];
     if (replaceMonths){
       const monthsInUpload = new Set(newRecords.map(r=>r.month));
-      existing = existing.filter(r => !monthsInUpload.has(r.month));
+      const newIds = new Set(newRecords.map(r=>r.id));
+      const now = new Date().toISOString();
+      tombstonesFromReplace = existingActive
+        .filter(r => monthsInUpload.has(r.month) && !newIds.has(r.id))
+        .map(r => Object.assign({}, r, { deleted:true, deletedAt: now }));
+      baseActive = existingActive.filter(r => !monthsInUpload.has(r.month) || newIds.has(r.id));
     }
 
     const map = {};
-    existing.forEach(r => { map[r.id] = r; });
+    baseActive.forEach(r => { map[r.id] = r; });
     let added = 0, updated = 0;
     newRecords.forEach(rec => {
       if (map[rec.id]) updated++; else added++;
       map[rec.id] = rec;
     });
-    const merged = Object.values(map);
-    saveRecords(merged);
-    ensureGroupSettingsForRecords(merged);
+    const mergedActive = Object.values(map);
+
+    // 既存のトゥームストーン（このアップロードで再度アクティブになったものは除く）も
+    // 保持しつつ、今回新たに置き換えで生まれたトゥームストーンも一緒に保存する
+    const raw = loadRecordsRaw();
+    const mergedActiveIds = new Set(mergedActive.map(r=>r.id));
+    const keptOldTombstones = raw.filter(r => r.deleted && !mergedActiveIds.has(r.id));
+    const newTombstoneIds = new Set(tombstonesFromReplace.map(r=>r.id));
+    const finalTombstones = keptOldTombstones.filter(t => !newTombstoneIds.has(t.id)).concat(tombstonesFromReplace);
+
+    saveRecordsRaw(mergedActive.concat(finalTombstones));
+    ensureGroupSettingsForRecords(mergedActive);
     const hist = loadHistory();
     hist.unshift({
       filename, uploadedAt: new Date().toISOString(),
-      rowCount: objs.length, added, updated, skipped, totalAfter: merged.length
+      rowCount: objs.length, added, updated, skipped, totalAfter: mergedActive.length
     });
     saveHistory(hist.slice(0, 50));
-    return { added, updated, skipped, total: merged.length };
+    return { added, updated, skipped, total: mergedActive.length };
   }
 
   // 受注データを特定の広告URLグループ名で一括削除する（ecforce側でグループ名を
@@ -1817,9 +1835,19 @@
       upsellIntervals: [30],
       offerIntervals: {},  // { [オファー名]: { frontIntervals:[...], upsellIntervals:[...] } } — オファー専用の上書き
       offerAliases: {},    // { [広告URLグループ名]: '割り当てるオファー名' } — 自動判定を手動で上書き（例：離脱防止ポップアップを初回980円に統合）
-      extraProducts: []  // [{ id, productCode, label, initialCount, priceFirst, priceRepeat, cogsFirst, cogsRepeat, intervals:[30], retention:{} }]
-                          // シークレットコースなど、途中で移行した別商品コードの分を個別設定して売上に上乗せする
+      offerExtraProducts: {}  // { [オファー名]: [{ id, productCode, label, initialCount, priceFirst, priceRepeat, cogsFirst, cogsRepeat, intervals:[30], retention:{} }] }
+                               // シークレットコースなど、途中で移行した別商品コードの分をオファー単位で個別設定し売上に上乗せする。
+                               // ''キーは「オファー指定なし（商材全体）」向け。他のオファーには反映されない。
     };
+  }
+  // 旧形式（extraProducts が商材直下の配列だった時代）のデータを、オファー指定なし
+  // ('' キー) の追加商品として読み替える後方互換ヘルパー
+  function getOfferExtraProducts(category, offer){
+    const s = getLtvCategorySettings(category);
+    const offerKey = offer || '';
+    if (s.offerExtraProducts && s.offerExtraProducts[offerKey]) return s.offerExtraProducts[offerKey];
+    if (!offerKey && Array.isArray(s.extraProducts) && s.extraProducts.length) return s.extraProducts; // legacy fallback
+    return [];
   }
   function defaultExtraProduct(){
     return {
@@ -2060,8 +2088,11 @@
       if (cycle > 1) b.upsellRates.push({ rate, cycle });
     }
 
-    // 追加商品（シークレットコースなど、途中で移行した別商品コードの分）を同じ月バケットに上乗せ
-    (s.extraProducts||[]).forEach(ep=>{
+    // 追加商品（シークレットコースなど、途中で移行した別商品コードの分）を同じ月バケットに上乗せ。
+    // オファー単位で個別設定されているため、他のオファー・他の商材には反映されない。
+    let extraProductsInitialSum = 0;
+    getOfferExtraProducts(category, offer).forEach(ep=>{
+      extraProductsInitialSum += Number(ep.initialCount)||0;
       const epSchedule = cycleScheduleFor(ep.intervals && ep.intervals.length ? ep.intervals : [30]);
       let epCount = Number(ep.initialCount)||0;
       for (let cycle = 1; cycle <= epSchedule.cycleCount; cycle++){
@@ -2077,10 +2108,17 @@
       }
     });
 
+    // 1件も獲得実績が無い（フロント・アップセル・追加商品すべて0件の）オファーは、
+    // 実際には何も動いていないので、広告費や1回きりコストなどの固定的な費用も
+    // 計上しない。そうしないと、稼働していないオファーが増えるほど、その分だけ
+    // 固定費が積み上がって赤字が膨らんでしまう。
+    const hasAnyInitialVolume = (initialFront>0) || (initialUpsell>0) || (extraProductsInitialSum>0);
+
     const maxMonth = Math.max(1, ...Object.keys(monthMap).map(Number));
     const rows = [];
     let totalOrders = 0, totalRevenue = 0, totalCogs = 0, totalAdCost = 0, totalOtherCost = 0;
-    const oneTimeCostTotal = (g.oneTimeCostItems||[]).reduce((sum,item)=>sum + (Number(item.unitCost)||0), 0);
+    const oneTimeCostTotal = hasAnyInitialVolume ? (g.oneTimeCostItems||[]).reduce((sum,item)=>sum + (Number(item.unitCost)||0), 0) : 0;
+    const effectiveInitialAdCost = hasAnyInitialVolume ? initialAdCost : 0;
 
     for (let month = 1; month <= maxMonth; month++){
       const b = monthMap[month] || { frontCount:0, upsellCount:0, extraCount:0, revenue:0, cogs:0, frontRates:[], upsellRates:[] };
@@ -2088,7 +2126,7 @@
       const fee = b.revenue * (Number(g.paymentFeeRate)||0);
       const loss = b.revenue * (Number(g.lossRate)||0);
       const fixedCost = (g.fixedCostItems||[]).reduce((sum,item)=>sum + (Number(item.unitCost)||0)*orders, 0);
-      const adCost = month === 1 ? initialAdCost : 0;
+      const adCost = month === 1 ? effectiveInitialAdCost : 0;
       const oneTimeCost = month === 1 ? oneTimeCostTotal : 0;
       const otherCost = fee + loss + fixedCost + oneTimeCost;
       const profit = b.revenue - b.cogs - adCost - otherCost;
@@ -2362,7 +2400,9 @@
       btn.addEventListener('click', ()=>{ ltvSelectedScenario = btn.dataset.scenario; renderLtvTab(); });
     });
     const activeSim = ltvSelectedScenario === 'landing' ? landingSim : progressSim;
-    const hasExtraProducts = (getLtvCategorySettings(ltvSelectedCategory||targetCategories[0]||'').extraProducts||[]).length > 0;
+    const hasExtraProducts = ltvSelectedCategory
+      ? getOfferExtraProducts(ltvSelectedCategory, ltvSelectedOffer).length > 0
+      : targetCategories.some(cat => getOfferExtraProducts(cat, '').length > 0);
 
     // 件数(フロント/アップセル/追加商品/合計) と 継続率(フロント/アップセル) をそれぞれ
     // 2階層ヘッダーでまとめ、原価+その他コストは「コスト」1本にまとめてクリックで内訳表示。
@@ -2762,11 +2802,17 @@
 
     // ---- 追加商品（シークレットコースなど、移行後の商品コード別に個別の継続率・単価・原価を設定） ----
     function renderExtraProducts(){
-      const cur = getLtvCategorySettings(ltvSelectedCategory);
-      const list = cur.extraProducts || [];
+      const extraProductOfferKey = ltvSelectedOffer || '';
+      const list = getOfferExtraProducts(ltvSelectedCategory, extraProductOfferKey);
       const cycleColsEp = [];
       for (let c=2;c<=LTV_EXPLICIT_CYCLES;c++) cycleColsEp.push(String(c));
       cycleColsEp.push('rest');
+
+      document.getElementById('ltvExtraProductsNote').innerHTML = `
+        <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px;">
+          ${extraProductOfferKey ? `オファー「${escapeHtml(extraProductOfferKey)}」専用の追加商品です。他のオファー・他の商材のシミュレーションには反映されません。` : 'オファーを指定せず登録した追加商品です（この商材で特定のオファーを選ぶと、そのオファー専用の追加商品を別に登録できます）。'}
+        </div>
+      `;
 
       document.getElementById('ltvExtraProductsArea').innerHTML = list.map(ep=>{
         const matchedCount = ep.productCode ? loadRecords().filter(r=>r.month===ltvSelectedMonth && r.code && r.code.includes(ep.productCode)).length : 0;
@@ -2800,14 +2846,25 @@
         </div>
       `;}).join('') || '<div class="empty-note">まだ追加商品は登録されていません</div>';
 
-      function commitEp(id, patch){
+      function withOfferExtraProducts(fn){
         const all = loadLtvSettings();
         if (!all[ltvSelectedCategory]) all[ltvSelectedCategory] = defaultLtvCategorySettings();
-        const arr = all[ltvSelectedCategory].extraProducts || [];
-        const item = arr.find(x=>x.id===id);
-        if (item) Object.assign(item, patch);
-        all[ltvSelectedCategory].extraProducts = arr;
+        if (!all[ltvSelectedCategory].offerExtraProducts) all[ltvSelectedCategory].offerExtraProducts = {};
+        if (!all[ltvSelectedCategory].offerExtraProducts[extraProductOfferKey]){
+          // migrate legacy category-level array into this offer bucket on first touch, if relevant
+          all[ltvSelectedCategory].offerExtraProducts[extraProductOfferKey] =
+            (!extraProductOfferKey && Array.isArray(all[ltvSelectedCategory].extraProducts))
+              ? all[ltvSelectedCategory].extraProducts.slice()
+              : [];
+        }
+        fn(all[ltvSelectedCategory].offerExtraProducts[extraProductOfferKey]);
         saveLtvSettings(all);
+      }
+      function commitEp(id, patch){
+        withOfferExtraProducts(arr=>{
+          const item = arr.find(x=>x.id===id);
+          if (item) Object.assign(item, patch);
+        });
       }
       document.querySelectorAll('.ep-code').forEach(inp=>{
         inp.addEventListener('change', ()=>{ commitEp(inp.dataset.id, { productCode: inp.value.trim() }); renderLtvTab(); });
@@ -2833,17 +2890,14 @@
       document.querySelectorAll('.ep-retention').forEach(inp=>{
         let t=null;
         function commit(){
-          const all = loadLtvSettings();
-          if (!all[ltvSelectedCategory]) all[ltvSelectedCategory] = defaultLtvCategorySettings();
-          const arr = all[ltvSelectedCategory].extraProducts || [];
-          const item = arr.find(x=>x.id===inp.dataset.id);
-          if (item){
-            if (!item.retention) item.retention = {};
-            const pctVal = Number(inp.value);
-            item.retention[inp.dataset.cycle] = isNaN(pctVal) ? 0 : pctVal/100;
-          }
-          all[ltvSelectedCategory].extraProducts = arr;
-          saveLtvSettings(all);
+          withOfferExtraProducts(arr=>{
+            const item = arr.find(x=>x.id===inp.dataset.id);
+            if (item){
+              if (!item.retention) item.retention = {};
+              const pctVal = Number(inp.value);
+              item.retention[inp.dataset.cycle] = isNaN(pctVal) ? 0 : pctVal/100;
+            }
+          });
           renderLtvTab();
         }
         inp.addEventListener('input', ()=>{ clearTimeout(t); t=setTimeout(commit,500); });
@@ -2857,12 +2911,11 @@
       });
       document.querySelectorAll('.ep-del').forEach(btn=>{
         btn.addEventListener('click', ()=>{
-          const all = loadLtvSettings();
-          if (all[ltvSelectedCategory] && all[ltvSelectedCategory].extraProducts){
-            all[ltvSelectedCategory].extraProducts = all[ltvSelectedCategory].extraProducts.filter(x=>x.id!==btn.dataset.id);
-            saveLtvSettings(all);
-            renderLtvTab();
-          }
+          withOfferExtraProducts(arr=>{
+            const idx = arr.findIndex(x=>x.id===btn.dataset.id);
+            if (idx !== -1) arr.splice(idx,1);
+          });
+          renderLtvTab();
         });
       });
     }
@@ -4957,10 +5010,12 @@
   });
   document.getElementById('ltvExtraProductAddBtn').addEventListener('click', ()=>{
     if (!ltvSelectedCategory){ alert('商材タブで個別の商材を選択してください。'); return; }
+    const offerKey = ltvSelectedOffer || '';
     const all = loadLtvSettings();
     if (!all[ltvSelectedCategory]) all[ltvSelectedCategory] = defaultLtvCategorySettings();
-    if (!all[ltvSelectedCategory].extraProducts) all[ltvSelectedCategory].extraProducts = [];
-    all[ltvSelectedCategory].extraProducts.push(defaultExtraProduct());
+    if (!all[ltvSelectedCategory].offerExtraProducts) all[ltvSelectedCategory].offerExtraProducts = {};
+    if (!all[ltvSelectedCategory].offerExtraProducts[offerKey]) all[ltvSelectedCategory].offerExtraProducts[offerKey] = [];
+    all[ltvSelectedCategory].offerExtraProducts[offerKey].push(defaultExtraProduct());
     saveLtvSettings(all);
     renderLtvTab();
   });
