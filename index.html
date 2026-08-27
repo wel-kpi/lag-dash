@@ -779,7 +779,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "3.20.1";
+  const APP_VERSION = "3.21.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -941,7 +941,7 @@
     try{ return Object.assign({ url:'', dateColumnIndex:null, mappings:{}, lastImportedAt:null, twoHeaderRows:false }, JSON.parse(localStorage.getItem(SHEET_CONFIG_KEY) || '{}')); }
     catch(e){ return { url:'', dateColumnIndex:null, mappings:{}, lastImportedAt:null, twoHeaderRows:false }; }
   }
-  function saveSheetConfig(cfg){ localStorage.setItem(SHEET_CONFIG_KEY, JSON.stringify(cfg)); }
+  function saveSheetConfig(cfg){ localStorage.setItem(SHEET_CONFIG_KEY, JSON.stringify(cfg)); pushKey('sheetConfig'); }
 
   // ---------- shared sync (Google Sheet backend via Apps Script) ----------
   function loadSyncUrl(){
@@ -965,7 +965,8 @@
     demographics: DEMOGRAPHICS_KEY,
     demographicsMeta: DEMOGRAPHICS_META_KEY,
     ltvSettings: LTV_SETTINGS_KEY,
-    ltvGlobal: LTV_GLOBAL_KEY
+    ltvGlobal: LTV_GLOBAL_KEY,
+    sheetConfig: SHEET_CONFIG_KEY
   };
   const SYNC_KEYS = Object.keys(SYNC_KEY_TO_STORAGE_KEY);
 
@@ -1406,6 +1407,17 @@
       if (!byGroup[r.group]) byGroup[r.group] = [];
       byGroup[r.group].push(r);
     });
+    // 予算運用グループは、その期間に受注が0件でも広告費だけ発生していることが
+    // あるため、日別広告費データに登場する予算運用グループも計算対象に加える
+    // （実際に受注があるグループは既に上のループで件数を保持済みなので上書きしない）
+    const settings = loadGroupSettings();
+    loadDailyBudget().forEach(b=>{
+      if (!b.group) return;
+      if (from && b.date < from) return;
+      if (to && b.date > to) return;
+      const s = settings[b.group];
+      if (s && s.type === 'budget' && !byGroup[b.group]) byGroup[b.group] = [];
+    });
     let total = 0;
     Object.entries(byGroup).forEach(([g, recs])=>{
       total += costForGroupRecords(g, recs, from, to);
@@ -1419,6 +1431,31 @@
     const lastDay = new Date(y, m, 0).getDate();
     const end = `${monthStr}-${String(lastDay).padStart(2,'0')}`;
     return { start, end };
+  }
+
+  // Enumerates every calendar day (or every calendar month) between from/to
+  // (both YYYY-MM-DD, inclusive) — used so days/months with zero orders but
+  // real ad spend still show up (otherwise their 広告費 silently drops out of
+  // both the per-row display and the period's grand-total CPA).
+  function enumerateDateKeys(from, to){
+    const keys = [];
+    let d = new Date(from+'T00:00:00');
+    const end = new Date(to+'T00:00:00');
+    while (d <= end){
+      keys.push(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`);
+      d.setDate(d.getDate()+1);
+    }
+    return keys;
+  }
+  function enumerateMonthKeys(from, to){
+    const keys = [];
+    let [y,m] = from.split('-').map(Number);
+    const [ey,em] = to.split('-').map(Number);
+    while (y < ey || (y === ey && m <= em)){
+      keys.push(`${y}-${String(m).padStart(2,'0')}`);
+      m++; if (m>12){ m=1; y++; }
+    }
+    return keys;
   }
 
   // ---------- shared period presets (当月・先月・先々月・全期間・期間指定) ----------
@@ -3543,6 +3580,14 @@
       if (r.type==='front') groups[k].front++; else groups[k].upsell++;
       groups[k].records.push(r);
     });
+    // 受注が0件の日/月でも広告費が発生していることがあるため、期間の範囲が
+    // はっきりしている場合（全期間以外）はその区間の日・月をすべて補完する
+    if (from && to){
+      const allKeys = granularity === 'month' ? enumerateMonthKeys(from, to) : enumerateDateKeys(from, to);
+      allKeys.forEach(k=>{
+        if (!groups[k]) groups[k] = { total:0, cancel:0, front:0, upsell:0, records:[] };
+      });
+    }
     const keys = Object.keys(groups).sort();
 
     let grandTotal=0, grandCancel=0, grandUpsell=0, grandCost=0;
@@ -4958,16 +5003,23 @@
   renderSyncStatusLabel();
 
   renderAll();
-  if (loadSyncUrl()) pullAndMergeAll();
   // 広告費スプレッドシートの自動取込を、以前は「データ管理」タブを開いた時だけ
-  // 行っていたが、ページを開いた時点ですぐに最新化されるようにする
-  (function autoFetchBudgetOnLoad(){
+  // 行っていたが、ページを開いた時点ですぐに最新化されるようにする。
+  // 共有データの同期（他端末で保存されたスプレッドシートURLの反映）が終わって
+  // からでないと、まだこの端末で一度もURLを入れたことがない場合に空振りして
+  // しまうため、pullAndMergeAllの完了を待ってから実行する。
+  function autoFetchBudgetOnLoad(){
     const cfg = loadSheetConfig();
     if (cfg.url){
       document.getElementById('sheetUrl').value = cfg.url;
       handleSheetFetch(true);
     }
-  })();
+  }
+  if (loadSyncUrl()){
+    pullAndMergeAll().then(autoFetchBudgetOnLoad).catch(autoFetchBudgetOnLoad);
+  } else {
+    autoFetchBudgetOnLoad();
+  }
 })();
 </script>
 </body>
