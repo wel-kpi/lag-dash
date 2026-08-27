@@ -784,7 +784,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "3.26.0";
+  const APP_VERSION = "3.27.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -814,6 +814,7 @@
   const BUDGET_LAST_UPDATED_KEY = 'lagnet_budget_last_updated_v1';
   const SHEET_CONFIG_KEY = 'lagnet_sheet_config_v1';
   const MEDIA_MAP_KEY = 'lagnet_media_map_v1';
+  const MEDIA_MAP_TIMESTAMPS_KEY = 'lagnet_media_map_timestamps_v1';
   const MEDIA_MAP_HISTORY_KEY = 'lagnet_media_map_history_v1';
   const DEMOGRAPHICS_KEY = 'lagnet_demographics_v1';
   const DEMOGRAPHICS_META_KEY = 'lagnet_demographics_meta_v1';
@@ -930,7 +931,24 @@
       return stored || Object.assign({}, DEFAULT_MEDIA_MAP);
     }catch(e){ return Object.assign({}, DEFAULT_MEDIA_MAP); }
   }
-  function saveMediaMap(obj){ localStorage.setItem(MEDIA_MAP_KEY, JSON.stringify(obj)); pushKey('mediaMap'); }
+  // mediaMap の値は単純な文字列（コード→媒体名）なので、その中に updatedAt を
+  // 埋め込めない。代わりに「コードごとの最終更新時刻」を別のキーで並行して
+  // 記録し、同期のマージ時にそれを見て新しい方を正しく採用できるようにする。
+  function loadMediaMapTimestamps(){
+    try{ return JSON.parse(localStorage.getItem(MEDIA_MAP_TIMESTAMPS_KEY) || '{}'); }catch(e){ return {}; }
+  }
+  function saveMediaMap(obj){
+    const prev = loadMediaMap();
+    const timestamps = loadMediaMapTimestamps();
+    const now = new Date().toISOString();
+    Object.keys(obj).forEach(code=>{
+      if (prev[code] !== obj[code]) timestamps[code] = now;
+    });
+    localStorage.setItem(MEDIA_MAP_TIMESTAMPS_KEY, JSON.stringify(timestamps));
+    localStorage.setItem(MEDIA_MAP_KEY, JSON.stringify(obj));
+    pushKey('mediaMap');
+    pushKey('mediaMapTimestamps');
+  }
 
   function loadMediaMapHistory(){
     try{ return JSON.parse(localStorage.getItem(MEDIA_MAP_HISTORY_KEY) || '[]'); }catch(e){ return []; }
@@ -1014,6 +1032,7 @@
     groupSettings: GROUP_SETTINGS_KEY,
     dailyBudget: DAILY_BUDGET_KEY,
     mediaMap: MEDIA_MAP_KEY,
+    mediaMapTimestamps: MEDIA_MAP_TIMESTAMPS_KEY,
     mediaMapHistory: MEDIA_MAP_HISTORY_KEY,
     demographics: DEMOGRAPHICS_KEY,
     demographicsMeta: DEMOGRAPHICS_META_KEY,
@@ -1117,8 +1136,15 @@
         });
         return merged;
       }
+      case 'ltvGlobal': {
+        // 単一のオブジェクト全体に対して updatedAt を1つだけ持つので、新しい方を
+        // まるごと採用する（決済手数料率・ロス率・固定費目など利益計算に直結する
+        // ため、こちらも新しい方を正しく優先する）
+        const sTime = (serverVal||{}).updatedAt ? new Date(serverVal.updatedAt).getTime() : 0;
+        const lTime = (localVal||{}).updatedAt ? new Date(localVal.updatedAt).getTime() : 0;
+        return lTime >= sTime ? localVal : serverVal;
+      }
       case 'mediaMap':
-      case 'ltvGlobal':
         return Object.assign({}, serverVal||{}, localVal||{});
       default:
         return localVal;
@@ -1160,6 +1186,7 @@
       const serverData = await res.json();
       const failedKeys = [];
       SYNC_KEYS.forEach(key=>{
+        if (key === 'mediaMap' || key === 'mediaMapTimestamps') return; // 下で専用処理
         // 1つの項目のマージで何か問題が起きても、他の項目の同期が巻き添えで
         // 止まらないように、キーごとに個別にエラーを吸収する（以前はここが
         // 1つの try/catch でまとめられていたため、records の同期でエラーが
@@ -1175,6 +1202,32 @@
           console.error('sync merge failed for key:', key, keyErr);
         }
       });
+      // mediaMap（コード→媒体名の文字列）と mediaMapTimestamps（コードごとの
+      // 最終更新時刻）はペアで扱う必要があるため、通常のキーごとマージとは別に
+      // ここでまとめて「コードごとに新しい方の値を採用する」処理を行う。
+      try{
+        let localMediaMap = null, localTimestamps = null;
+        try{ localMediaMap = JSON.parse(localStorage.getItem(MEDIA_MAP_KEY) || 'null'); }catch(e){}
+        try{ localTimestamps = JSON.parse(localStorage.getItem(MEDIA_MAP_TIMESTAMPS_KEY) || 'null'); }catch(e){}
+        const serverMediaMap = (serverData.mediaMap && typeof serverData.mediaMap === 'object') ? serverData.mediaMap : {};
+        const serverTimestamps = (serverData.mediaMapTimestamps && typeof serverData.mediaMapTimestamps === 'object') ? serverData.mediaMapTimestamps : {};
+        const l = (localMediaMap && typeof localMediaMap === 'object') ? localMediaMap : {};
+        const lt = (localTimestamps && typeof localTimestamps === 'object') ? localTimestamps : {};
+        const mergedMap = {}, mergedTs = {};
+        new Set(Object.keys(serverMediaMap).concat(Object.keys(l))).forEach(code=>{
+          const sTime = serverTimestamps[code] ? new Date(serverTimestamps[code]).getTime() : 0;
+          const lTime = lt[code] ? new Date(lt[code]).getTime() : 0;
+          if (l[code] === undefined){ mergedMap[code] = serverMediaMap[code]; mergedTs[code] = serverTimestamps[code]; return; }
+          if (serverMediaMap[code] === undefined){ mergedMap[code] = l[code]; mergedTs[code] = lt[code]; return; }
+          if (lTime >= sTime){ mergedMap[code] = l[code]; mergedTs[code] = lt[code]; }
+          else { mergedMap[code] = serverMediaMap[code]; mergedTs[code] = serverTimestamps[code]; }
+        });
+        localStorage.setItem(MEDIA_MAP_KEY, JSON.stringify(mergedMap));
+        localStorage.setItem(MEDIA_MAP_TIMESTAMPS_KEY, JSON.stringify(mergedTs));
+      }catch(mmErr){
+        failedKeys.push('mediaMap');
+        console.error('sync merge failed for mediaMap:', mmErr);
+      }
       localStorage.setItem(SYNC_LAST_KEY, new Date().toISOString());
       if (failedKeys.length){
         setSyncStatus('error', `一部のデータの同期に失敗しました（${failedKeys.join(', ')}）。他のデータは正常に同期されています。`);
@@ -2140,7 +2193,12 @@
       return stored;
     }catch(e){ return defaultLtvGlobal(); }
   }
-  function saveLtvGlobal(obj){ localStorage.setItem(LTV_GLOBAL_KEY, JSON.stringify(obj)); pushKey('ltvGlobal'); }
+  // groupSettings/ltvSettings と同じ理由で updatedAt を自動付与する
+  function saveLtvGlobal(obj){
+    obj.updatedAt = new Date().toISOString();
+    localStorage.setItem(LTV_GLOBAL_KEY, JSON.stringify(obj));
+    pushKey('ltvGlobal');
+  }
 
   function retentionRateFor(retentionObj, cycle){
     if (cycle <= 1) return 1;
