@@ -784,7 +784,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "3.24.0";
+  const APP_VERSION = "3.25.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -1485,7 +1485,11 @@
   }
 
   // cost across a mixed set of records (any groups) for a single period window [from,to]
-  function costForRecordsInWindow(records, from, to){
+  // categoryFilter/offerFilter を渡すと、「受注0件でも広告費だけ発生している」
+  // グループの追加対象を、その商材・オファーに属するグループだけに絞り込む。
+  // これを渡さない場合（商材・オファーで絞り込んでいない画面）は今まで通り、
+  // 予算運用の全グループが対象になる。
+  function costForRecordsInWindow(records, from, to, categoryFilter, offerFilter){
     const byGroup = {};
     records.forEach(r=>{
       if (!r.group) return;
@@ -1500,8 +1504,15 @@
       if (!b.group) return;
       if (from && b.date < from) return;
       if (to && b.date > to) return;
+      if (byGroup[b.group]) return; // 実際に受注があるグループは対象済みなのでスキップ
       const s = settings[b.group];
-      if (s && s.type === 'budget' && !byGroup[b.group]) byGroup[b.group] = [];
+      if (!s || s.type !== 'budget') return;
+      // 商材・オファーで絞り込んでいる場合は、そのグループが本当にその条件に
+      // 属するかを確認してから加える（そうしないと無関係な商材・オファーの
+      // 広告費まで巻き込んでしまう）
+      if (categoryFilter && extractCategory(b.group) !== categoryFilter) return;
+      if (offerFilter && resolveOffer(categoryFilter, b.group) !== offerFilter) return;
+      byGroup[b.group] = [];
     });
     let total = 0;
     Object.entries(byGroup).forEach(([g, recs])=>{
@@ -1512,7 +1523,7 @@
 
   // 上と同じロジックで、広告費の合計だけでなく「どのグループがいくら」の内訳も
   // 返す版。想定外に高額なCPAが出た時に、原因のグループを特定するのに使う。
-  function costBreakdownForRecordsInWindow(records, from, to){
+  function costBreakdownForRecordsInWindow(records, from, to, categoryFilter, offerFilter){
     const byGroup = {};
     records.forEach(r=>{
       if (!r.group) return;
@@ -1524,8 +1535,12 @@
       if (!b.group) return;
       if (from && b.date < from) return;
       if (to && b.date > to) return;
+      if (byGroup[b.group]) return;
       const s = settings[b.group];
-      if (s && s.type === 'budget' && !byGroup[b.group]) byGroup[b.group] = [];
+      if (!s || s.type !== 'budget') return;
+      if (categoryFilter && extractCategory(b.group) !== categoryFilter) return;
+      if (offerFilter && resolveOffer(categoryFilter, b.group) !== offerFilter) return;
+      byGroup[b.group] = [];
     });
     const breakdown = Object.entries(byGroup).map(([g, recs])=>({
       group: g,
@@ -1742,7 +1757,7 @@
     const to = isCurrentMonth ? todayStr() : `${monthKey}-${String(daysInMonth).padStart(2,'0')}`;
     const filtered = filterRecords(records, { from: monthStart, to, category: category||null })
       .filter(r => !offer || resolveOffer(category, r.group) === offer);
-    return costBreakdownForRecordsInWindow(filtered, monthStart, to);
+    return costBreakdownForRecordsInWindow(filtered, monthStart, to, category||null, offer||null);
   }
 
   function computeLanding(category, offer, monthKey){
@@ -1760,7 +1775,7 @@
       .filter(r => !offer || resolveOffer(category, r.group) === offer);
     const count = filtered.length;
     const cancelCount = filtered.filter(r=>r.isCancel).length;
-    const cost = costForRecordsInWindow(filtered, monthStart, todayD);
+    const cost = costForRecordsInWindow(filtered, monthStart, todayD, category||null, offer||null);
 
     const dailyAvgCount = dayOfMonth>0 ? count/dayOfMonth : 0;
     const dailyAvgCancel = dayOfMonth>0 ? cancelCount/dayOfMonth : 0;
@@ -3269,7 +3284,7 @@
     const cancels = filtered.filter(r=>r.isCancel).length;
     const front = filtered.filter(r=>r.type==='front').length;
     const upsell = filtered.filter(r=>r.type==='upsell').length;
-    const cost = costForRecordsInWindow(filtered, from, to);
+    const cost = costForRecordsInWindow(filtered, from, to, dashboardCategory||null);
     const validCount = total - cancels;
     const cpa = cost>0 && total>0 ? cost/total : NaN;
     const cpaValid = cost>0 && validCount>0 ? cost/validCount : NaN;
@@ -3324,7 +3339,7 @@
       <tbody>${catRows.map(([cat,g])=>{
         const cancelRate = pct(g.cancel, g.total);
         const upsellRate = pct(g.upsell, g.front+g.upsell);
-        const catCost = costForRecordsInWindow(g.records, from, to);
+        const catCost = costForRecordsInWindow(g.records, from, to, cat);
         const catValid = g.total - g.cancel;
         const catCpa = catCost>0 && g.total>0 ? catCost/g.total : NaN;
         const catCpaValid = catCost>0 && catValid>0 ? catCost/catValid : NaN;
@@ -3795,7 +3810,7 @@
       const cancelRate = pct(g.cancel, g.total);
       const upsellRate = pct(g.upsell, g.total);
       const bounds = granularity === 'month' ? monthBounds(k) : { start: k, end: k };
-      const cost = costForRecordsInWindow(g.records, bounds.start, bounds.end);
+      const cost = costForRecordsInWindow(g.records, bounds.start, bounds.end, trendCategory||null);
       const cpa = cost>0 && g.total>0 ? cost/g.total : NaN;
       grandTotal += g.total; grandCancel += g.cancel; grandUpsell += g.upsell; grandCost += cost;
       return `<tr>
@@ -3865,7 +3880,7 @@
     categories.forEach(cat=>{
       const catRecords = filtered.filter(r=>r.category===cat);
       const count = catRecords.length;
-      const cost = costForRecordsInWindow(catRecords, from, to);
+      const cost = costForRecordsInWindow(catRecords, from, to, cat);
       const cpa = cost>0 && count>0 ? cost/count : null;
       lines.push(`＜${cat}＞`);
       lines.push(`件数：${fmtNum(count)}`);
