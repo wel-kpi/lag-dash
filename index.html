@@ -538,6 +538,10 @@
           <div class="grid-kpi" id="ltvMinKpis"></div>
         </div>
       </div>
+      <div class="controls" style="margin-top:10px;">
+        <button class="btn small" id="ltvAdCostBreakdownToggle">広告費の内訳を見る（想定外に高いCPAの原因調査に）</button>
+      </div>
+      <div id="ltvAdCostBreakdownArea" style="display:none;margin-top:10px;"></div>
     </div>
 
     <div class="panel">
@@ -1506,6 +1510,32 @@
     return total;
   }
 
+  // 上と同じロジックで、広告費の合計だけでなく「どのグループがいくら」の内訳も
+  // 返す版。想定外に高額なCPAが出た時に、原因のグループを特定するのに使う。
+  function costBreakdownForRecordsInWindow(records, from, to){
+    const byGroup = {};
+    records.forEach(r=>{
+      if (!r.group) return;
+      if (!byGroup[r.group]) byGroup[r.group] = [];
+      byGroup[r.group].push(r);
+    });
+    const settings = loadGroupSettings();
+    loadDailyBudget().forEach(b=>{
+      if (!b.group) return;
+      if (from && b.date < from) return;
+      if (to && b.date > to) return;
+      const s = settings[b.group];
+      if (s && s.type === 'budget' && !byGroup[b.group]) byGroup[b.group] = [];
+    });
+    const breakdown = Object.entries(byGroup).map(([g, recs])=>({
+      group: g,
+      count: recs.length,
+      cost: costForGroupRecords(g, recs, from, to),
+      type: (settings[g] && settings[g].type) || 'none'
+    })).filter(x=>x.cost > 0).sort((a,b)=>b.cost-a.cost);
+    return breakdown;
+  }
+
   function monthBounds(monthStr){
     const [y, m] = monthStr.split('-').map(Number);
     const start = `${monthStr}-01`;
@@ -1697,6 +1727,22 @@
       frontLanding: frontCount + dailyAvgFront*remainingDays,
       upsellLanding: upsellCount + dailyAvgUpsell*remainingDays
     };
+  }
+
+  // 想定外に高いCPAが出た時に「どの広告URLグループが原因か」を特定するための
+  // 内訳。着地想定の予測額はこの実績の内訳を比例配分しただけなので、実績（今月分の
+  // 確定データ）の内訳を見せれば十分に原因究明の役に立つ。
+  function computeAdCostBreakdown(category, offer, monthKey){
+    const records = loadRecords();
+    monthKey = monthKey || currentMonthKey();
+    const isCurrentMonth = monthKey === currentMonthKey();
+    const [ty, tm] = monthKey.split('-').map(Number);
+    const monthStart = `${monthKey}-01`;
+    const daysInMonth = new Date(ty, tm, 0).getDate();
+    const to = isCurrentMonth ? todayStr() : `${monthKey}-${String(daysInMonth).padStart(2,'0')}`;
+    const filtered = filterRecords(records, { from: monthStart, to, category: category||null })
+      .filter(r => !offer || resolveOffer(category, r.group) === offer);
+    return costBreakdownForRecordsInWindow(filtered, monthStart, to);
   }
 
   function computeLanding(category, offer, monthKey){
@@ -2387,6 +2433,43 @@
     } else {
       document.getElementById('ltvMaxScenarioBox').style.display = 'none';
       document.getElementById('ltvMinScenarioBox').style.display = 'none';
+    }
+
+    // 広告費の内訳（想定外に高いCPAの原因調査用）
+    const adCostToggleBtn = document.getElementById('ltvAdCostBreakdownToggle');
+    const adCostArea = document.getElementById('ltvAdCostBreakdownArea');
+    if (ltvSelectedCategory){
+      adCostToggleBtn.style.display = '';
+      adCostToggleBtn.onclick = ()=>{
+        if (adCostArea.style.display !== 'none'){
+          adCostArea.style.display = 'none';
+          return;
+        }
+        const breakdown = computeAdCostBreakdown(ltvSelectedCategory, ltvSelectedOffer, ltvSelectedMonth);
+        const grandTotal = breakdown.reduce((s,x)=>s+x.cost,0);
+        adCostArea.innerHTML = breakdown.length ? `
+          <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px;">獲得月「${escapeHtml(ltvSelectedMonth)}」${ltvSelectedOffer?'・オファー「'+escapeHtml(ltvSelectedOffer)+'」':''}の実績ベースの広告費内訳です（着地想定はこれを比例配分しているだけなので、原因はここに出ます）。</div>
+          <div class="table-wrap">
+            <table class="data">
+              <thead><tr><th>広告URLグループ</th><th>種別</th><th class="num">件数</th><th class="num">広告費</th></tr></thead>
+              <tbody>${breakdown.map(x=>`
+                <tr>
+                  <td style="text-align:left;">${escapeHtml(x.group)}</td>
+                  <td style="text-align:left;">${x.type==='budget'?'予算運用':x.type==='affiliate'?'アフィリエイト':'—'}</td>
+                  <td class="num">${fmtNum(x.count)}</td>
+                  <td class="num">${fmtYen(x.cost)}</td>
+                </tr>
+              `).join('')}
+              <tr class="total-row-top"><td>合計</td><td></td><td class="num" style="text-align:right;">—</td><td class="num" style="text-align:right;">${fmtYen(grandTotal)}</td></tr>
+              </tbody>
+            </table>
+          </div>
+        ` : '<div class="empty-note">この条件で広告費データが見つかりませんでした。</div>';
+        adCostArea.style.display = '';
+      };
+    } else {
+      adCostToggleBtn.style.display = 'none';
+      adCostArea.style.display = 'none';
     }
 
     // scenario toggle + cycle detail table
