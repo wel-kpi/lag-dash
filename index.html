@@ -784,7 +784,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "3.25.1";
+  const APP_VERSION = "3.26.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -884,7 +884,25 @@
   function loadGroupSettings(){
     try{ return JSON.parse(localStorage.getItem(GROUP_SETTINGS_KEY) || '{}'); }catch(e){ return {}; }
   }
-  function saveGroupSettings(obj){ localStorage.setItem(GROUP_SETTINGS_KEY, JSON.stringify(obj)); pushKey('groupSettings'); }
+  // 変更があったグループにだけ自動で updatedAt を付ける（既存の呼び出し箇所を
+  // 1つずつ直す必要が無いよう、ここで自動的に差分検知している）。他端末との
+  // 同期で「新しい方を正しく採用する」ために必要。
+  function saveGroupSettings(obj){
+    const prev = loadGroupSettings();
+    Object.keys(obj).forEach(groupName=>{
+      const cur = obj[groupName];
+      if (!cur || typeof cur !== 'object') return;
+      const prevGroup = prev[groupName];
+      const curWithoutTs = Object.assign({}, cur); delete curWithoutTs.updatedAt;
+      const prevWithoutTs = prevGroup ? Object.assign({}, prevGroup) : null;
+      if (prevWithoutTs) delete prevWithoutTs.updatedAt;
+      if (!prevGroup || JSON.stringify(prevWithoutTs) !== JSON.stringify(curWithoutTs)){
+        cur.updatedAt = new Date().toISOString();
+      }
+    });
+    localStorage.setItem(GROUP_SETTINGS_KEY, JSON.stringify(obj));
+    pushKey('groupSettings');
+  }
   function loadDailyBudgetRaw(){
     try{ return JSON.parse(localStorage.getItem(DAILY_BUDGET_KEY) || '[]'); }catch(e){ return []; }
   }
@@ -1081,8 +1099,25 @@
         return Object.values(map).sort((a,b)=> new Date(b.uploadedAt)-new Date(a.uploadedAt)).slice(0,50);
       }
       case 'groupSettings':
+      case 'ltvSettings': {
+        // 各グループ/商材ごとに updatedAt を比較し、新しい方を正しく採用する
+        // （以前は「自分の端末を問答無用で優先」だったため、片方の端末で行った
+        // 設定変更が、もう片方の古いローカルデータで上書きされてしまう不具合が
+        // あった＝成果単価が反映されない、というのはまさにこれが原因だった）。
+        const merged = {};
+        const allKeys = new Set(Object.keys(serverVal||{}).concat(Object.keys(localVal||{})));
+        allKeys.forEach(k=>{
+          const s = (serverVal||{})[k];
+          const l = (localVal||{})[k];
+          if (s == null){ merged[k] = l; return; }
+          if (l == null){ merged[k] = s; return; }
+          const sTime = s.updatedAt ? new Date(s.updatedAt).getTime() : 0;
+          const lTime = l.updatedAt ? new Date(l.updatedAt).getTime() : 0;
+          merged[k] = lTime >= sTime ? l : s;
+        });
+        return merged;
+      }
       case 'mediaMap':
-      case 'ltvSettings':
       case 'ltvGlobal':
         return Object.assign({}, serverVal||{}, localVal||{});
       default:
@@ -2048,7 +2083,23 @@
   function loadLtvSettings(){
     try{ return JSON.parse(localStorage.getItem(LTV_SETTINGS_KEY) || '{}'); }catch(e){ return {}; }
   }
-  function saveLtvSettings(obj){ localStorage.setItem(LTV_SETTINGS_KEY, JSON.stringify(obj)); pushKey('ltvSettings'); }
+  // groupSettings と同じ理由で、変更があった商材にだけ自動で updatedAt を付ける
+  function saveLtvSettings(obj){
+    const prev = loadLtvSettings();
+    Object.keys(obj).forEach(category=>{
+      const cur = obj[category];
+      if (!cur || typeof cur !== 'object') return;
+      const prevCat = prev[category];
+      const curWithoutTs = Object.assign({}, cur); delete curWithoutTs.updatedAt;
+      const prevWithoutTs = prevCat ? Object.assign({}, prevCat) : null;
+      if (prevWithoutTs) delete prevWithoutTs.updatedAt;
+      if (!prevCat || JSON.stringify(prevWithoutTs) !== JSON.stringify(curWithoutTs)){
+        cur.updatedAt = new Date().toISOString();
+      }
+    });
+    localStorage.setItem(LTV_SETTINGS_KEY, JSON.stringify(obj));
+    pushKey('ltvSettings');
+  }
   function getLtvCategorySettings(category){
     const all = loadLtvSettings();
     return Object.assign(defaultLtvCategorySettings(), all[category] || {});
