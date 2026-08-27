@@ -779,7 +779,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "3.21.0";
+  const APP_VERSION = "3.23.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -851,10 +851,27 @@
   }
 
   // ---------- storage ----------
-  function loadRecords(){
+  // 受注データは削除しても他端末との同期で復活してしまう問題があったため、物理的に
+  // 配列から取り除くのではなく deleted:true の目印（トゥームストーン）を付けて残す
+  // 方式にしている。同期のマージ処理でも「削除は常に勝つ」ルールを適用することで、
+  // どちらの端末で削除しても、同期後は両方の端末で正しく消えるようにしている。
+  function loadRecordsRaw(){
     try{ return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); }catch(e){ return []; }
   }
-  function saveRecords(arr){ localStorage.setItem(STORAGE_KEY, JSON.stringify(arr)); pushKey('records'); }
+  function loadRecords(){
+    return loadRecordsRaw().filter(r => !r.deleted);
+  }
+  function saveRecordsRaw(arr){ localStorage.setItem(STORAGE_KEY, JSON.stringify(arr)); pushKey('records'); }
+  // Backward-compatible helper: replaces the ACTIVE record set, preserving any
+  // existing tombstones (deleted:true entries) that aren't part of the new set.
+  function saveRecords(activeArr){
+    const raw = loadRecordsRaw();
+    const tombstones = raw.filter(r => r.deleted);
+    const activeIds = new Set(activeArr.map(r=>r.id));
+    // drop any tombstone whose id is being re-written as active (re-uploaded / undeleted)
+    const keptTombstones = tombstones.filter(t => !activeIds.has(t.id));
+    saveRecordsRaw(activeArr.concat(keptTombstones));
+  }
   function loadHistory(){
     try{ return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); }catch(e){ return []; }
   }
@@ -863,13 +880,26 @@
     try{ return JSON.parse(localStorage.getItem(GROUP_SETTINGS_KEY) || '{}'); }catch(e){ return {}; }
   }
   function saveGroupSettings(obj){ localStorage.setItem(GROUP_SETTINGS_KEY, JSON.stringify(obj)); pushKey('groupSettings'); }
-  function loadDailyBudget(){
+  function loadDailyBudgetRaw(){
     try{ return JSON.parse(localStorage.getItem(DAILY_BUDGET_KEY) || '[]'); }catch(e){ return []; }
   }
-  function saveDailyBudget(arr){
+  function loadDailyBudget(){
+    return loadDailyBudgetRaw().filter(b => !b.deleted);
+  }
+  function saveDailyBudgetRaw(arr){
     localStorage.setItem(DAILY_BUDGET_KEY, JSON.stringify(arr));
     localStorage.setItem(BUDGET_LAST_UPDATED_KEY, new Date().toISOString());
     pushKey('dailyBudget');
+  }
+  // Backward-compatible helper: replaces the ACTIVE budget entries, preserving any
+  // existing tombstones (deleted:true entries) not part of the new set (same
+  // rationale as saveRecords — otherwise a deletion never survives a sync merge).
+  function saveDailyBudget(activeArr){
+    const raw = loadDailyBudgetRaw();
+    const tombstones = raw.filter(b => b.deleted);
+    const activeIds = new Set(activeArr.map(b=>b.id));
+    const keptTombstones = tombstones.filter(t => !activeIds.has(t.id));
+    saveDailyBudgetRaw(activeArr.concat(keptTombstones));
   }
   function loadMediaMap(){
     try{
@@ -977,11 +1007,35 @@
     if (serverVal == null) return localVal;
     if (localVal == null) return serverVal;
     switch(key){
-      case 'records':
+      case 'records': {
+        // 同じ注文IDでも、対応状況（キャンセルかどうか等）が後から変わって内容が
+        // 食い違うことがあるため、単純に「自分の端末を優先」ではなく、
+        // updatedAt（無ければdeletedAt）が新しい方を正しく採用する。
+        // 削除は「もう片方がそれより新しく上書き（再アップロードで復活）」しない
+        // 限り勝つ。
+        function effectiveTime(r){
+          const t = r.deleted ? (r.deletedAt || r.updatedAt) : r.updatedAt;
+          return t ? new Date(t).getTime() : 0;
+        }
+        const map = {};
+        (serverVal||[]).forEach(x=>{ if (x && x.id) map[x.id]=x; });
+        (localVal||[]).forEach(x=>{
+          if (!x || !x.id) return;
+          const existing = map[x.id];
+          if (!existing){ map[x.id]=x; return; }
+          map[x.id] = effectiveTime(x) >= effectiveTime(existing) ? x : existing;
+        });
+        return Object.values(map);
+      }
       case 'dailyBudget': {
         const map = {};
         (serverVal||[]).forEach(x=>{ if (x && x.id) map[x.id]=x; });
-        (localVal||[]).forEach(x=>{ if (x && x.id) map[x.id]=x; });
+        (localVal||[]).forEach(x=>{
+          if (!x || !x.id) return;
+          const existing = map[x.id];
+          if (existing && existing.deleted && !x.deleted) return; // stay deleted
+          map[x.id]=x;
+        });
         return Object.values(map);
       }
       case 'mediaMapHistory': {
@@ -1209,7 +1263,8 @@
     const id = dt + '|' + code + '|' + group + '|' + paymentMethod + '|' + purchaseUrl;
     return {
       id, datetime: dt, date, month, category, agency, group, code, type, purchaseUrl,
-      orderStatus, paymentStatus, isCancel: orderStatus === 'キャンセル'
+      orderStatus, paymentStatus, isCancel: orderStatus === 'キャンセル',
+      updatedAt: new Date().toISOString() // 対応状況が後から変わった場合に「新しい方を優先」できるようにする
     };
   }
 
@@ -1254,12 +1309,20 @@
   }
 
   // 受注データを特定の広告URLグループ名で一括削除する（ecforce側でグループ名を
-  // 変更した際、旧グループ名のまま残ってしまった重複データの掃除などに使う）
+  // 変更した際、旧グループ名のまま残ってしまった重複データの掃除などに使う）。
+  // 物理削除ではなく deleted:true を付ける「論理削除」にして、他端末との同期で
+  // 削除が正しく伝わるようにしている。
   function deleteRecordsByGroup(groupName){
-    const records = loadRecords();
-    const filtered = records.filter(r => r.group !== groupName);
-    const removedCount = records.length - filtered.length;
-    saveRecords(filtered);
+    const raw = loadRecordsRaw();
+    let removedCount = 0;
+    const updated = raw.map(r=>{
+      if (r.group === groupName && !r.deleted){
+        removedCount++;
+        return Object.assign({}, r, { deleted: true, deletedAt: new Date().toISOString() });
+      }
+      return r;
+    });
+    saveRecordsRaw(updated);
     return removedCount;
   }
 
@@ -4088,8 +4151,14 @@
   document.getElementById('budgetDeleteGroupBtn').addEventListener('click', ()=>{
     if (!budgetFilterGroupState) return;
     if (!confirm(`「${budgetFilterGroupState}」の日別広告費データを全て削除します。よろしいですか？`)) return;
-    const arr = loadDailyBudget().filter(b=>b.group!==budgetFilterGroupState);
-    saveDailyBudget(arr);
+    const raw = loadDailyBudgetRaw();
+    const updated = raw.map(b=>{
+      if (b.group === budgetFilterGroupState && !b.deleted){
+        return Object.assign({}, b, { deleted: true, deletedAt: new Date().toISOString() });
+      }
+      return b;
+    });
+    saveDailyBudgetRaw(updated);
     budgetFilterGroupState = '';
     renderBudgetTable();
     renderSummary();
