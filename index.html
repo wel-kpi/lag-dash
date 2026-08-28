@@ -635,7 +635,19 @@
 
     <div class="panel">
       <h2>広告URLグループ別 設定<span class="n" id="groupSettingsCount"></span></h2>
-      <div class="table-wrap"><table class="data" id="groupSettingsTable"></table></div>
+      <div class="controls">
+        <label style="font-weight:600;color:var(--text);">商材で絞り込み</label>
+      </div>
+      <div class="cat-tabs" id="costCategoryTabs"></div>
+      <div class="controls" style="margin-top:10px;">
+        <label style="font-weight:600;color:var(--text);">オファーで絞り込み</label>
+      </div>
+      <div class="cat-tabs" id="costOfferTabs"></div>
+      <div class="controls" style="margin-top:10px;">
+        <label style="font-weight:600;color:var(--text);">代理店で絞り込み</label>
+      </div>
+      <div class="cat-tabs" id="costAgencyTabs"></div>
+      <div class="table-wrap" style="margin-top:10px;"><table class="data" id="groupSettingsTable"></table></div>
     </div>
 
     <div class="panel">
@@ -805,7 +817,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.2.0";
+  const APP_VERSION = "4.3.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -4501,6 +4513,9 @@
 
   // ---------- cost settings tab ----------
   let cpaPeriod = 'thismonth';
+  let costFilterCategory = '';
+  let costFilterOffer = '';
+  let costFilterAgency = '';
 
   function cpaPeriodBounds(period){
     const today = todayStr();
@@ -4548,17 +4563,70 @@
     const groupsPresent = {};
     records.forEach(r=>{
       if (!r.group) return;
-      if (!groupsPresent[r.group]) groupsPresent[r.group] = { category:r.category, agency:r.agency, count:0 };
+      if (!groupsPresent[r.group]) groupsPresent[r.group] = { category:r.category, agency:r.agency, offer:resolveOffer(r.category, r.group), count:0 };
       groupsPresent[r.group].count++;
     });
     Object.keys(settings).forEach(g=>{
       if (settings[g].temporary && !groupsPresent[g]){
-        groupsPresent[g] = { category: settings[g].category, agency: settings[g].agency, count: 0, temporary: true };
+        groupsPresent[g] = { category: settings[g].category, agency: settings[g].agency, offer: resolveOffer(settings[g].category, g), count: 0, temporary: true };
       }
     });
-    const groupNames = Object.keys(groupsPresent).sort((a,b)=>groupsPresent[b].count-groupsPresent[a].count);
+    const allGroupNames = Object.keys(groupsPresent);
 
-    document.getElementById('groupSettingsCount').textContent = ` (${groupNames.length}件)`;
+    // 商材・オファー・代理店で絞り込むためのタブ（他のタブで使っているのと同じボタン
+    // スタイル）。商材→オファー→代理店の順に、選んだ条件で選択肢を絞り込んでいく。
+    const availCategories = uniqueSorted(allGroupNames.map(g=>groupsPresent[g].category));
+    if (costFilterCategory && !availCategories.includes(costFilterCategory)) costFilterCategory = '';
+    renderCatTabs(document.getElementById('costCategoryTabs'), availCategories, costFilterCategory, (cat)=>{
+      costFilterCategory = cat;
+      costFilterOffer = ''; // 商材を変えたらオファーの絞り込みはリセットする
+      renderCostTab();
+    });
+
+    const afterCategory = allGroupNames.filter(g => !costFilterCategory || groupsPresent[g].category === costFilterCategory);
+    const offerTabsEl = document.getElementById('costOfferTabs');
+    if (costFilterCategory){
+      const availOffers = uniqueSorted(afterCategory.map(g=>groupsPresent[g].offer).filter(Boolean));
+      if (costFilterOffer && !availOffers.includes(costFilterOffer)) costFilterOffer = '';
+      offerTabsEl.innerHTML = ['すべて'].concat(availOffers).map(o=>{
+        const val = o==='すべて' ? '' : o;
+        const active = costFilterOffer === val ? 'active' : '';
+        return `<button type="button" class="cat-btn ${active}" data-offer="${escapeHtml(val)}" style="${active?'color:var(--accent);border-color:var(--accent);':''}">${escapeHtml(o)}</button>`;
+      }).join('');
+      offerTabsEl.querySelectorAll('.cat-btn').forEach(btn=>{
+        btn.addEventListener('click', ()=>{ costFilterOffer = btn.dataset.offer; renderCostTab(); });
+      });
+    } else {
+      costFilterOffer = ''; // 商材未選択の時はオファーで絞り込めない（他のタブと同じ挙動）
+      offerTabsEl.innerHTML = '<span class="n">商材を選択するとオファーで絞り込めます</span>';
+    }
+
+    const afterOffer = afterCategory.filter(g => !costFilterOffer || groupsPresent[g].offer === costFilterOffer);
+    const availAgencies = uniqueSorted(afterOffer.map(g=>groupsPresent[g].agency));
+    if (costFilterAgency && !availAgencies.includes(costFilterAgency)) costFilterAgency = '';
+    document.getElementById('costAgencyTabs').innerHTML = ['すべて'].concat(availAgencies).map(a=>{
+      const val = a==='すべて' ? '' : a;
+      const active = costFilterAgency === val ? 'active' : '';
+      return `<button type="button" class="cat-btn ${active}" data-agency="${escapeHtml(val)}" style="${active?'color:var(--accent);border-color:var(--accent);':''}">${escapeHtml(a)}</button>`;
+    }).join('');
+    document.querySelectorAll('#costAgencyTabs .cat-btn').forEach(btn=>{
+      btn.addEventListener('click', ()=>{ costFilterAgency = btn.dataset.agency; renderCostTab(); });
+    });
+
+    const filteredGroupNames = afterOffer.filter(g => !costFilterAgency || groupsPresent[g].agency === costFilterAgency);
+
+    // 表示順：以前は件数の多い順だったが、一覧性を優先して商材順→オファー順→
+    // グループ名順に変更（絞り込みが「すべて」の時も、この順で並ぶ）。
+    const categoryOrder = sortCategoriesForDisplay(availCategories);
+    const groupNames = filteredGroupNames.slice().sort((a,b)=>{
+      const catA = groupsPresent[a].category, catB = groupsPresent[b].category;
+      if (catA !== catB) return categoryOrder.indexOf(catA) - categoryOrder.indexOf(catB);
+      const offA = groupsPresent[a].offer || '', offB = groupsPresent[b].offer || '';
+      if (offA !== offB) return offA.localeCompare(offB, 'ja');
+      return a.localeCompare(b, 'ja');
+    });
+
+    document.getElementById('groupSettingsCount').textContent = ` (${groupNames.length}件 / 全${allGroupNames.length}件)`;
 
     document.getElementById('groupSettingsTable').innerHTML = `
       <thead><tr>
@@ -4632,7 +4700,7 @@
     });
 
     // budget group select (only groups classified as 'budget')
-    const budgetGroups = groupNames.filter(g => (settings[g]?.type) === 'budget');
+    const budgetGroups = allGroupNames.filter(g => (settings[g]?.type) === 'budget').sort((a,b)=>a.localeCompare(b,'ja'));
     const budgetSel = document.getElementById('budgetGroup');
     const curSel = budgetSel.value;
     budgetSel.innerHTML = budgetGroups.map(g=>`<option value="${escapeHtml(g)}">${escapeHtml(g)}</option>`).join('') || '<option value="">（予算運用グループがありません）</option>';
