@@ -787,7 +787,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "3.29.0";
+  const APP_VERSION = "3.31.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -1183,6 +1183,11 @@
   async function pullAndMergeAll(){
     const url = loadSyncUrl();
     if (!url) return;
+    // 定期ポーリング・タブ復帰・push前マージなど複数の経路からほぼ同時に
+    // 呼ばれ得るため、実行中は多重に走らせない（結果が変わるわけではないが、
+    // 無駄なリクエストとレンダリングの重複を避ける）。
+    if (syncInFlight) return;
+    syncInFlight = true;
     setSyncStatus('syncing');
     try{
       const res = await fetchWithRetry(url, { method: 'GET' });
@@ -1240,12 +1245,19 @@
       renderAll();
     }catch(err){
       setSyncStatus('error', err.message || 'Failed to fetch');
+    }finally{
+      syncInFlight = false;
     }
   }
 
   async function pushKey(key){
     const url = loadSyncUrl();
     if (!url) return;
+    // 送信前に必ずサーバーの最新状態を取り込んでからマージする。これをせず
+    // 「今ローカルにある値」をそのまま送ってしまうと、自分がページを開いて
+    // から今までの間に他の端末が保存した変更を、まるごと上書きして消して
+    // しまう（別端末で開くたびに表示がバラバラになっていた不具合の原因）。
+    await pullAndMergeAll();
     const storageKey = SYNC_KEY_TO_STORAGE_KEY[key];
     let value = null;
     try{ value = JSON.parse(localStorage.getItem(storageKey) || 'null'); }catch(e){}
@@ -2557,14 +2569,63 @@
           progressRevenue2yr: pSim.totalRevenue, landingRevenue2yr: lSim.totalRevenue
         });
       });
+      const combinedProgress = progressSims.length === 1 ? progressSims[0] : mergeSims(progressSims);
+      const combinedLandingSim = landingSims.length === 1 ? landingSims[0] : mergeSims(landingSims);
       return {
-        progressSim: mergeSims(progressSims), landingSim: mergeSims(landingSims),
+        progressSim: combinedProgress, landingSim: combinedLandingSim,
         initFront, initUpsell, initFrontLanding, initUpsellLanding,
         cancelCount, autoLandingCancelCount, cost, landingCost, offerBreakdown
       };
     }
 
     let lastOfferBreakdown = null; // すべてオファー表示時の内訳を、下のUIから参照できるように保持
+
+    // 「すべてオファー」選択時、継続率・単価設定は編集不可にし、代わりに実在する
+    // オファーの初期件数で加重平均した値を参考表示する。
+    function computeWeightedAverageRetention(category, month, offerBreakdown){
+      const cycleKeys = [];
+      for (let c=2;c<=LTV_EXPLICIT_CYCLES;c++) cycleKeys.push(String(c));
+      cycleKeys.push('rest');
+      const frontSums={}, frontWeights={}, upsellSums={}, upsellWeights={};
+      offerBreakdown.forEach(x=>{
+        const realOffer = x.offer==='（オファー無し）' ? '' : x.offer;
+        const info = getLtvRetention(category, month, realOffer);
+        cycleKeys.forEach(c=>{
+          if (info.frontRetention[c]!=null && x.initFront>0){
+            frontSums[c]=(frontSums[c]||0)+info.frontRetention[c]*x.initFront;
+            frontWeights[c]=(frontWeights[c]||0)+x.initFront;
+          }
+          if (info.upsellRetention[c]!=null && x.initUpsell>0){
+            upsellSums[c]=(upsellSums[c]||0)+info.upsellRetention[c]*x.initUpsell;
+            upsellWeights[c]=(upsellWeights[c]||0)+x.initUpsell;
+          }
+        });
+      });
+      const frontAvg={}, upsellAvg={};
+      cycleKeys.forEach(c=>{
+        if (frontWeights[c]) frontAvg[c]=frontSums[c]/frontWeights[c];
+        if (upsellWeights[c]) upsellAvg[c]=upsellSums[c]/upsellWeights[c];
+      });
+      return { frontRetention: frontAvg, upsellRetention: upsellAvg };
+    }
+    function computeWeightedAveragePriceCogs(category, offerBreakdown){
+      const keys = ['frontPriceFirst','frontPriceRepeat','upsellPriceFirst','upsellPriceRepeat','frontCogsFirst','frontCogsRepeat','upsellCogsFirst','upsellCogsRepeat'];
+      const sums={}, weights={};
+      keys.forEach(k=>{sums[k]=0;weights[k]=0;});
+      offerBreakdown.forEach(x=>{
+        const realOffer = x.offer==='（オファー無し）' ? '' : x.offer;
+        const pc = getOfferPriceCogs(category, realOffer);
+        ['frontPriceFirst','frontPriceRepeat','frontCogsFirst','frontCogsRepeat'].forEach(k=>{
+          sums[k]+=(pc[k]||0)*x.initFront; weights[k]+=x.initFront;
+        });
+        ['upsellPriceFirst','upsellPriceRepeat','upsellCogsFirst','upsellCogsRepeat'].forEach(k=>{
+          sums[k]+=(pc[k]||0)*x.initUpsell; weights[k]+=x.initUpsell;
+        });
+      });
+      const avg={};
+      keys.forEach(k=>{ avg[k] = weights[k] ? sums[k]/weights[k] : 0; });
+      return avg;
+    }
 
     if (ltvSelectedCategory){
       const r = simulateForCategoryOffer(ltvSelectedCategory, ltvSelectedOffer, ltvSelectedMonth);
@@ -2964,6 +3025,31 @@
     document.getElementById('ltvRetentionSettingsAllNote').style.display = 'none';
 
     // ---- settings: price / cogs table（オファーごとに異なる値を持てる） ----
+    // 「すべてオファー」選択時は編集不可にし、実在オファーの件数で加重平均した
+    // 参考値だけを表示する（継続率と同じ理由）。
+    const isAllOffersView = !ltvSelectedOffer;
+    if (isAllOffersView && lastOfferBreakdown){
+      const avgPriceCogs = computeWeightedAveragePriceCogs(ltvSelectedCategory, lastOfferBreakdown);
+      const priceCogsRowsAvg = [
+        { label:'フロント初回単価', val:avgPriceCogs.frontPriceFirst },
+        { label:'フロント継続単価', val:avgPriceCogs.frontPriceRepeat },
+        { label:'アップセル初回単価', val:avgPriceCogs.upsellPriceFirst },
+        { label:'アップセル継続単価', val:avgPriceCogs.upsellPriceRepeat },
+        { label:'フロント初回原価', val:avgPriceCogs.frontCogsFirst },
+        { label:'フロント継続原価', val:avgPriceCogs.frontCogsRepeat },
+        { label:'アップセル初回原価', val:avgPriceCogs.upsellCogsFirst },
+        { label:'アップセル継続原価', val:avgPriceCogs.upsellCogsRepeat }
+      ];
+      document.getElementById('ltvPriceCogsNote').innerHTML = `
+        <div class="note-box">「すべて」のオファーが選択されているため、単価・原価は編集できません。実在するオファーの初期件数で加重平均した参考値を表示しています。<strong>変更する場合は対象のオファーを選択してください。</strong></div>
+      `;
+      document.getElementById('ltvPriceCogsTable').innerHTML = `
+        <thead><tr><th>項目</th><th class="num">平均金額(円)</th></tr></thead>
+        <tbody>${priceCogsRowsAvg.map(r=>`
+          <tr><td style="text-align:left;">${r.label}</td><td class="num"><input type="number" value="${Math.round(r.val)||0}" disabled style="width:100px;text-align:right;background:var(--bg-panel-2);color:var(--text-dim);"></td></tr>
+        `).join('')}</tbody>
+      `;
+    } else {
     const priceCogsOfferKey = ltvSelectedOffer || '';
     const pcInfo = getOfferPriceCogs(ltvSelectedCategory, priceCogsOfferKey);
     const priceCogsRows = [
@@ -3024,13 +3110,31 @@
         }
       });
     }
+    } // end of isAllOffersView else-branch for price/cogs settings
 
     // ---- settings: retention rate table (獲得月・オファーごとに異なる値を持てる) ----
-    const retentionOfferKey = ltvSelectedOffer || '';
-    const retentionInfo = getLtvRetention(ltvSelectedCategory, ltvSelectedMonth, retentionOfferKey);
+    // 「すべてオファー」選択時は編集不可にし、実在オファーの件数で加重平均した
+    // 参考値だけを表示する（内部のシミュレーションはオファーごとに分解して計算
+    // しているため、このタイミングでの編集は実際の計算に反映されない）。
     const cycleCols = [];
     for (let c=2;c<=LTV_EXPLICIT_CYCLES;c++) cycleCols.push(String(c));
     cycleCols.push('rest');
+    if (isAllOffersView && lastOfferBreakdown){
+      const avgRetention = computeWeightedAverageRetention(ltvSelectedCategory, ltvSelectedMonth, lastOfferBreakdown);
+      document.getElementById('ltvRetentionNote').innerHTML = `
+        <div class="note-box">「すべて」のオファーが選択されているため、継続率は編集できません。実在するオファーの初期件数で加重平均した参考値を表示しています。<strong>変更する場合は対象のオファーを選択してください。</strong></div>
+      `;
+      document.getElementById('ltvRetentionTable').innerHTML = `
+        <thead><tr><th>種別</th>${cycleCols.map(c=>`<th class="num">${c==='rest'?`${LTV_EXPLICIT_CYCLES+1}回目以降`:c+'回目'}</th>`).join('')}</tr></thead>
+        <tbody>
+          <tr><td style="text-align:left;">フロント平均</td>${cycleCols.map(c=>`<td class="num"><input type="number" value="${avgRetention.frontRetention[c]!=null?(avgRetention.frontRetention[c]*100).toFixed(0):''}" disabled style="width:56px;text-align:right;background:var(--bg-panel-2);color:var(--text-dim);"></td>`).join('')}</tr>
+          <tr><td style="text-align:left;">アップセル平均</td>${cycleCols.map(c=>`<td class="num"><input type="number" value="${avgRetention.upsellRetention[c]!=null?(avgRetention.upsellRetention[c]*100).toFixed(0):''}" disabled style="width:56px;text-align:right;background:var(--bg-panel-2);color:var(--text-dim);"></td>`).join('')}</tr>
+        </tbody>
+      `;
+      document.getElementById('ltvRetentionPasteArea').innerHTML = '';
+    } else {
+    const retentionOfferKey = ltvSelectedOffer || '';
+    const retentionInfo = getLtvRetention(ltvSelectedCategory, ltvSelectedMonth, retentionOfferKey);
     document.getElementById('ltvRetentionNote').innerHTML = `
       <div class="note-box">
         獲得月「${escapeHtml(ltvSelectedMonth)}」${retentionOfferKey?'・オファー「'+escapeHtml(retentionOfferKey)+'」':'（すべてのオファー共通）'}の継続率を編集しています。${retentionInfo.isOfferOverride ? 'このオファー専用の値が設定されています。' : (retentionInfo.isMonthOverride ? 'この月の「すべてのオファー」共通値を表示しています。' : 'まだこの月の値がないため、商材共通のデフォルト値を表示しています。')}ここを編集すると、今表示中の条件専用の値として保存されます。
@@ -3162,6 +3266,7 @@
     }
     document.getElementById('ltvPasteFrontBtn').addEventListener('click', ()=>applyRetentionPaste('front'));
     document.getElementById('ltvPasteUpsellBtn').addEventListener('click', ()=>applyRetentionPaste('upsell'));
+    } // end of isAllOffersView else-branch for retention settings
 
     // ---- 追加商品（シークレットコースなど、移行後の商品コード別に個別の継続率・単価・原価を設定） ----
     function renderExtraProducts(){
@@ -5507,6 +5612,19 @@
   } else {
     autoFetchBudgetOnLoad();
   }
+
+  // ---------- 自動ポーリング（スプレッドシートに近い体感にするため） ----------
+  // タブを開きっぱなしにしていても他の端末の更新が自動で反映されるよう、
+  // 一定間隔でサーバーの最新状態を取り込む。また、他のタブ/アプリに切り替えて
+  // から戻ってきた瞬間にも即座に取り込む（バックグラウンドタブでの無駄な
+  // ポーリングはブラウザ側で間引かれるため、visibilitychange と併用する）。
+  const AUTO_PULL_INTERVAL_MS = 15000;
+  setInterval(()=>{
+    if (document.visibilityState === 'visible' && loadSyncUrl()) pullAndMergeAll();
+  }, AUTO_PULL_INTERVAL_MS);
+  document.addEventListener('visibilitychange', ()=>{
+    if (document.visibilityState === 'visible' && loadSyncUrl()) pullAndMergeAll();
+  });
 })();
 </script>
 </body>
