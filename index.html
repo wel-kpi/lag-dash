@@ -297,12 +297,12 @@
       <h1>LAGNET <span class="sub">獲得管理ツール</span></h1>
       <span class="ver" id="verLabel"></span>
       <button class="btn small" id="themeToggleBtn" title="ライト/ダーク切替" style="padding:2px 8px;">🌙</button>
-      <button class="btn small" id="headerPullBtn" title="サーバーの最新データを取得します" style="padding:2px 8px;">⬇ 受信</button>
-      <button class="btn small" id="headerPushBtn" title="この端末のデータをサーバーへ反映します" style="padding:2px 8px;">⬆ 送信</button>
+      <button id="headerPullBtn" title="サーバーの最新データを取得します" style="padding:6px 14px;font-size:13.5px;font-weight:700;border-radius:8px;border:1px solid #c97a1f;background:#e88b2a;color:#1a1408;cursor:pointer;">⬇ 受信</button>
     </div>
     <div style="text-align:right;">
       <div class="meta" id="dataMeta">データ 0件</div>
       <div class="meta" id="lastUpdatesMeta" style="margin-top:2px;font-size:11px;"></div>
+      <div class="meta" id="unsyncedAlert" style="margin-top:4px;font-size:12px;font-weight:700;color:var(--danger);display:none;">⚠ 未送信の変更があります（データ管理タブ→送信）</div>
     </div>
   </header>
 
@@ -664,6 +664,13 @@
   <!-- MANAGE -->
   <section id="tab-manage" style="display:none;">
     <div class="panel">
+      <h2>サーバーへ送信<span class="n">（この端末で変更を加えたら、他の端末に反映するために押してください）</span></h2>
+      <div class="controls">
+        <button class="btn primary" id="syncPushBtn" style="font-size:14px;padding:10px 20px;">⬆ 送信（この端末のデータをサーバーへ反映）</button>
+        <span class="n" id="topSyncStatusLabel"></span>
+      </div>
+    </div>
+    <div class="panel">
       <h2>CSVアップロード（ecforce 新規受注一覧）</h2>
       <div id="dropzone">
         <div class="icon">📤</div>
@@ -723,12 +730,11 @@
       </div>
       <div class="controls" style="margin-top:10px;">
         <button class="btn" id="syncSaveBtn">連携設定を保存</button>
-        <button class="btn" id="syncPullBtn">⬇ 受信（サーバーの最新データを取得）</button>
-        <button class="btn primary" id="syncPushBtn">⬆ 送信（この端末のデータをサーバーへ反映）</button>
       </div>
       <div class="controls" style="margin-top:6px;">
         <span class="n" id="syncStatusLabel"></span>
       </div>
+      <div class="note-box" style="margin-top:8px;font-size:11.5px;">「受信」は画面右上のオレンジ色のボタン、「送信」はこのタブの一番上のボタンから行えます。</div>
     </div>
     <div class="panel">
       <h2>スプレッドシート連携（予算運用の日別広告費を取込み）</h2>
@@ -790,7 +796,7 @@
   </section>
 
   <footer class="note">
-    データはこの端末のブラウザ内（localStorage）に保存されます。他の端末と共有するには、ヘッダーの「送信」「受信」ボタンを使ってください（データ管理タブ→共有設定）。<br>
+    データはこの端末のブラウザ内（localStorage）に保存されます。他の端末と共有するには、画面右上の「受信」ボタン、またはデータ管理タブ一番上の「送信」ボタンを使ってください。<br>
     商材判定: 広告URLグループ名の<code>【】</code>内カテゴリ／代理店判定: 広告主名列／フロント・アップセル判定: 商品コードに <code>upsell</code> を含むか
   </footer>
 </div>
@@ -799,7 +805,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.0.0";
+  const APP_VERSION = "4.1.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -1093,7 +1099,13 @@
     demographicsMeta: DEMOGRAPHICS_META_KEY,
     ltvSettings: LTV_SETTINGS_KEY,
     ltvGlobal: LTV_GLOBAL_KEY,
-    sheetConfig: SHEET_CONFIG_KEY
+    sheetConfig: SHEET_CONFIG_KEY,
+    // ダッシュボードの「着地想定」で使う手動調整・グループ別の手入力件数。
+    // これが同期対象から漏れていたため、着地想定の数字だけ端末ごとに
+    // バラバラになる不具合があった（定数の宣言順の都合上、キー名は
+    // ここでは文字列そのまま書く＝下のLANDING_OVERRIDE_KEY等と同じ値）。
+    landingOverrides: 'lagnet_landing_override_v1',
+    landingSim: 'lagnet_landing_sim_v1'
   };
   const SYNC_KEYS = Object.keys(SYNC_KEY_TO_STORAGE_KEY);
 
@@ -1287,19 +1299,26 @@
   }
 
   function renderSyncStatusLabel(){
-    const el = document.getElementById('syncStatusLabel');
-    if (!el) return;
     const url = loadSyncUrl();
-    if (!url){ el.textContent = '未設定（この端末のみ）'; return; }
-    if (syncStatus === 'syncing'){ el.textContent = '通信中…'; return; }
-    if (syncStatus === 'error'){ el.textContent = `エラー: ${syncErrorMessage}`; return; }
     function fmt(iso){
       if (!iso) return '未実施';
       const dt = new Date(iso);
       return `${dt.getMonth()+1}/${dt.getDate()} ${String(dt.getHours()).padStart(2,'0')}:${String(dt.getMinutes()).padStart(2,'0')}`;
     }
-    const unsynced = hasUnsyncedLocalChanges() ? '　⚠未送信の変更あり' : '';
-    el.textContent = `最終送信: ${fmt(loadLastPush())}　最終受信: ${fmt(loadLastPull())}${unsynced}`;
+    let text;
+    if (!url){ text = '未設定（この端末のみ）'; }
+    else if (syncStatus === 'syncing'){ text = '通信中…'; }
+    else if (syncStatus === 'error'){ text = `エラー: ${syncErrorMessage}`; }
+    else {
+      const unsynced = hasUnsyncedLocalChanges() ? '　⚠未送信の変更あり' : '';
+      text = `最終送信: ${fmt(loadLastPush())}　最終受信: ${fmt(loadLastPull())}${unsynced}`;
+    }
+    ['syncStatusLabel','topSyncStatusLabel'].forEach(id=>{
+      const el = document.getElementById(id);
+      if (el) el.textContent = text;
+    });
+    const alertEl = document.getElementById('unsyncedAlert');
+    if (alertEl) alertEl.style.display = (url && hasUnsyncedLocalChanges()) ? '' : 'none';
   }
 
   // ---------- encoding detection & CSV parse ----------
@@ -1826,7 +1845,7 @@
   function loadLandingOverrides(){
     try{ return JSON.parse(localStorage.getItem(LANDING_OVERRIDE_KEY) || '{}'); }catch(e){ return {}; }
   }
-  function saveLandingOverrides(obj){ localStorage.setItem(LANDING_OVERRIDE_KEY, JSON.stringify(obj)); }
+  function saveLandingOverrides(obj){ localStorage.setItem(LANDING_OVERRIDE_KEY, JSON.stringify(obj)); markLocalMutation(); }
   function currentMonthKey(){
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
@@ -1838,7 +1857,7 @@
   function loadLandingSimRows(){
     try{ return JSON.parse(localStorage.getItem(LANDING_SIM_KEY) || '[]'); }catch(e){ return []; }
   }
-  function saveLandingSimRows(arr){ localStorage.setItem(LANDING_SIM_KEY, JSON.stringify(arr)); }
+  function saveLandingSimRows(arr){ localStorage.setItem(LANDING_SIM_KEY, JSON.stringify(arr)); markLocalMutation(); }
 
   // computes projected month-end totals: (actual so far) + (daily average so far × remaining days)
   // per-group version of the same daily-average landing projection, used as the
@@ -4725,10 +4744,8 @@
     renderSyncStatusLabel();
     alert('連携設定を保存しました。');
   });
-  document.getElementById('syncPullBtn').addEventListener('click', ()=>{ manualPullAll(false); });
   document.getElementById('syncPushBtn').addEventListener('click', ()=>{ manualPushAll(false); });
   document.getElementById('headerPullBtn').addEventListener('click', ()=>{ manualPullAll(false); });
-  document.getElementById('headerPushBtn').addEventListener('click', ()=>{ manualPushAll(false); });
 
   document.getElementById('budgetAddBtn').addEventListener('click', ()=>{
     const date = document.getElementById('budgetDate').value;
