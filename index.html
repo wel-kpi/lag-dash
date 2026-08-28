@@ -297,6 +297,8 @@
       <h1>LAGNET <span class="sub">獲得管理ツール</span></h1>
       <span class="ver" id="verLabel"></span>
       <button class="btn small" id="themeToggleBtn" title="ライト/ダーク切替" style="padding:2px 8px;">🌙</button>
+      <button class="btn small" id="headerPullBtn" title="サーバーの最新データを取得します" style="padding:2px 8px;">⬇ 受信</button>
+      <button class="btn small" id="headerPushBtn" title="この端末のデータをサーバーへ反映します" style="padding:2px 8px;">⬆ 送信</button>
     </div>
     <div style="text-align:right;">
       <div class="meta" id="dataMeta">データ 0件</div>
@@ -708,13 +710,23 @@
     <div class="panel">
       <h2>共有設定<span class="n">（全データをスプレッドシート経由でチーム共有）</span></h2>
       <div class="note-box">
-        <strong>このツールには共有バックエンドURLが最初から設定されています。</strong>受注データ・広告費設定・媒体コード・履歴など<strong>全データ</strong>が共有スプレッドシートに保存され、このファイルを開いた人は誰でも同じ内容を見られます。<br>
-        別の共有先に変えたい場合はURLを書き換えて保存してください。共有をやめてこの端末だけのデータに戻したい場合は、欄を空にして保存してください。<br>
-        オフライン中もこの端末に保存された直前のデータが表示され、オンラインに戻ったタイミング・タブを開いたタイミングで自動的に同期されます。
+        <strong>自動での送受信は行いません。</strong>「受信」「送信」ボタンを押した時だけ通信します。<br>
+        <strong>更新した端末</strong>は、入力・CSV取込などが終わったら「送信」を押してください（この端末の全データでサーバー側を上書きします）。<br>
+        <strong>確認するだけの端末</strong>は、開いたときに「受信」を押してください（サーバーの最新データでこの端末を丸ごと置き換えます）。<br>
+        同時に同じ内容を編集しないようご注意ください（後から送信した方の内容で上書きされます）。
       </div>
       <div class="inline-form">
-        <label>共有バックエンドURL <input type="text" id="syncUrlInput" style="width:380px;" placeholder="https://script.google.com/macros/s/.../exec"></label>
-        <button class="btn primary" id="syncSaveBtn">保存して同期</button>
+        <label>共有バックエンドURL（送信先） <input type="text" id="syncUrlInput" style="width:380px;" placeholder="https://script.google.com/macros/s/.../exec"></label>
+      </div>
+      <div class="inline-form" style="margin-top:6px;">
+        <label>共有スプレッドシートID（受信元） <input type="text" id="syncSheetIdInput" style="width:380px;" placeholder="スプレッドシートのURL中のID部分"></label>
+      </div>
+      <div class="controls" style="margin-top:10px;">
+        <button class="btn" id="syncSaveBtn">連携設定を保存</button>
+        <button class="btn" id="syncPullBtn">⬇ 受信（サーバーの最新データを取得）</button>
+        <button class="btn primary" id="syncPushBtn">⬆ 送信（この端末のデータをサーバーへ反映）</button>
+      </div>
+      <div class="controls" style="margin-top:6px;">
         <span class="n" id="syncStatusLabel"></span>
       </div>
     </div>
@@ -778,7 +790,7 @@
   </section>
 
   <footer class="note">
-    データはこの端末のブラウザ内（localStorage）にのみ保存されます。他の端末とは共有されません。<br>
+    データはこの端末のブラウザ内（localStorage）に保存されます。他の端末と共有するには、ヘッダーの「送信」「受信」ボタンを使ってください（データ管理タブ→共有設定）。<br>
     商材判定: 広告URLグループ名の<code>【】</code>内カテゴリ／代理店判定: 広告主名列／フロント・アップセル判定: 商品コードに <code>upsell</code> を含むか
   </footer>
 </div>
@@ -787,7 +799,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "3.31.0";
+  const APP_VERSION = "4.0.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -824,10 +836,17 @@
   const LTV_SETTINGS_KEY = 'lagnet_ltv_settings_v1';
   const LTV_GLOBAL_KEY = 'lagnet_ltv_global_v1';
   const SYNC_URL_KEY = 'lagnet_sync_url_v1';
-  // デフォルトの共有バックエンドURL。この端末で明示的に設定を変更（空欄保存を含む）
-  // していない限り、初回から自動でこの共有スプレッドシートに接続します。
+  // デフォルトの共有バックエンドURL（送信＝POST専用。Apps ScriptのWebアプリURL）。
+  // この端末で明示的に設定を変更（空欄保存を含む）していない限り、初回から
+  // 自動でこの共有スプレッドシートに接続します。
   const DEFAULT_SYNC_URL = 'https://script.google.com/macros/s/AKfycbyVWG6qD3WV9FIQ89nlzI9hfEdPuBf54kOQXP544f-mELV8vVhdLeyLlKkjnJLniwO6/exec';
-  const SYNC_LAST_KEY = 'lagnet_sync_last_v1';
+  // 受信＝gviz読み取り専用。共有スプレッドシートそのもののID
+  // （https://docs.google.com/spreadsheets/d/【この部分】/edit... のID部分）。
+  const SYNC_SHEET_ID_KEY = 'lagnet_sync_sheet_id_v1';
+  const DEFAULT_SYNC_SHEET_ID = '1lF3eFi59T4Cz1K-JuMAZZO9dMw70b00eof4-IuxDRuE';
+  const LAST_PUSH_KEY = 'lagnet_last_push_v1';
+  const LAST_PULL_KEY = 'lagnet_last_pull_v1';
+  const LAST_LOCAL_MUTATION_KEY = 'lagnet_last_local_mutation_v1';
 
   const DEFAULT_MEDIA_MAP = {
     'fbk': 'Meta',
@@ -870,7 +889,7 @@
   function loadRecords(){
     return loadRecordsRaw().filter(r => !r.deleted);
   }
-  function saveRecordsRaw(arr){ localStorage.setItem(STORAGE_KEY, JSON.stringify(arr)); pushKey('records'); }
+  function saveRecordsRaw(arr){ localStorage.setItem(STORAGE_KEY, JSON.stringify(arr)); markLocalMutation(); }
   // Backward-compatible helper: replaces the ACTIVE record set, preserving any
   // existing tombstones (deleted:true entries) that aren't part of the new set.
   function saveRecords(activeArr){
@@ -884,7 +903,7 @@
   function loadHistory(){
     try{ return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); }catch(e){ return []; }
   }
-  function saveHistory(arr){ localStorage.setItem(HISTORY_KEY, JSON.stringify(arr)); pushKey('history'); }
+  function saveHistory(arr){ localStorage.setItem(HISTORY_KEY, JSON.stringify(arr)); markLocalMutation(); }
   function loadGroupSettings(){
     try{ return JSON.parse(localStorage.getItem(GROUP_SETTINGS_KEY) || '{}'); }catch(e){ return {}; }
   }
@@ -905,7 +924,7 @@
       }
     });
     localStorage.setItem(GROUP_SETTINGS_KEY, JSON.stringify(obj));
-    pushKey('groupSettings');
+    markLocalMutation();
   }
   function loadDailyBudgetRaw(){
     try{ return JSON.parse(localStorage.getItem(DAILY_BUDGET_KEY) || '[]'); }catch(e){ return []; }
@@ -916,7 +935,7 @@
   function saveDailyBudgetRaw(arr){
     localStorage.setItem(DAILY_BUDGET_KEY, JSON.stringify(arr));
     localStorage.setItem(BUDGET_LAST_UPDATED_KEY, new Date().toISOString());
-    pushKey('dailyBudget');
+    markLocalMutation();
   }
   // Backward-compatible helper: replaces the ACTIVE budget entries, preserving any
   // existing tombstones (deleted:true entries) not part of the new set (same
@@ -949,8 +968,8 @@
     });
     localStorage.setItem(MEDIA_MAP_TIMESTAMPS_KEY, JSON.stringify(timestamps));
     localStorage.setItem(MEDIA_MAP_KEY, JSON.stringify(obj));
-    pushKey('mediaMap');
-    pushKey('mediaMapTimestamps');
+    markLocalMutation();
+    markLocalMutation();
   }
 
   function loadMediaMapHistory(){
@@ -958,21 +977,21 @@
   }
   function saveMediaMapHistory(arr){
     localStorage.setItem(MEDIA_MAP_HISTORY_KEY, JSON.stringify(arr.slice(0, 50)));
-    pushKey('mediaMapHistory');
+    markLocalMutation();
   }
   function loadDemographics(){
     try{ return JSON.parse(localStorage.getItem(DEMOGRAPHICS_KEY) || '[]'); }catch(e){ return []; }
   }
   function saveDemographics(arr){
     localStorage.setItem(DEMOGRAPHICS_KEY, JSON.stringify(arr));
-    pushKey('demographics');
+    markLocalMutation();
   }
   function loadDemographicsMeta(){
     try{ return JSON.parse(localStorage.getItem(DEMOGRAPHICS_META_KEY) || 'null'); }catch(e){ return null; }
   }
   function saveDemographicsMeta(meta){
     localStorage.setItem(DEMOGRAPHICS_META_KEY, JSON.stringify(meta));
-    pushKey('demographicsMeta');
+    markLocalMutation();
   }
   function pushMediaMapHistory(entry){
     const hist = loadMediaMapHistory();
@@ -1015,15 +1034,48 @@
     try{ return Object.assign({ url:'', dateColumnIndex:null, mappings:{}, lastImportedAt:null, twoHeaderRows:false }, JSON.parse(localStorage.getItem(SHEET_CONFIG_KEY) || '{}')); }
     catch(e){ return { url:'', dateColumnIndex:null, mappings:{}, lastImportedAt:null, twoHeaderRows:false }; }
   }
-  function saveSheetConfig(cfg){ localStorage.setItem(SHEET_CONFIG_KEY, JSON.stringify(cfg)); pushKey('sheetConfig'); }
+  function saveSheetConfig(cfg){ localStorage.setItem(SHEET_CONFIG_KEY, JSON.stringify(cfg)); markLocalMutation(); }
 
   // ---------- shared sync (Google Sheet backend via Apps Script) ----------
+  // v4: 自動送受信をやめ、「受信」「送信」ボタンを押した時だけ通信する方式に変更。
+  // 理由：自動同期（定期ポーリング・保存のたびに自動送信）は、
+  //   1) fetch() での取得がApps Scriptのリダイレクト構成上まれに信頼できない
+  //   2) 複数端末がほぼ同時に自動送信すると、サーバー側のデータが誰にも
+  //      気づかれないまま上書きされてしまう
+  // という問題を抱えており、何度対策しても「他の端末と表示が食い違う」事故が
+  // 再発していた。以前ボトル管理ツールで実績のある「手動ボタン＋iframe送信・
+  // gviz受信」方式に統一することで、いつ・誰が何をしたか本人にも明確になり、
+  // 通信方式自体もApps ScriptのCORS/リダイレクトの制約を受けにくいものにする。
   function loadSyncUrl(){
     const stored = localStorage.getItem(SYNC_URL_KEY);
     return stored !== null ? stored : DEFAULT_SYNC_URL;
   }
   function saveSyncUrl(url){ localStorage.setItem(SYNC_URL_KEY, url); }
-  function loadSyncLast(){ return localStorage.getItem(SYNC_LAST_KEY) || null; }
+  // 受信（gviz読み取り）専用: 共有スプレッドシートそのもののID。
+  // Apps ScriptのURLとは別物（Apps ScriptのURLは送信＝POST専用に使う）。
+  function loadSyncSheetId(){
+    const stored = localStorage.getItem(SYNC_SHEET_ID_KEY);
+    return stored !== null ? stored : DEFAULT_SYNC_SHEET_ID;
+  }
+  function saveSyncSheetId(id){ localStorage.setItem(SYNC_SHEET_ID_KEY, id); }
+
+  function loadLastPush(){ return localStorage.getItem(LAST_PUSH_KEY) || null; }
+  function loadLastPull(){ return localStorage.getItem(LAST_PULL_KEY) || null; }
+  function loadLastLocalMutation(){ return localStorage.getItem(LAST_LOCAL_MUTATION_KEY) || null; }
+  // データを保存する各関数から呼ばれる。以前はここで自動的にサーバーへ送信して
+  // いたが、今は「まだ送信していない変更がある」という印を付けるだけにする。
+  function markLocalMutation(){
+    localStorage.setItem(LAST_LOCAL_MUTATION_KEY, new Date().toISOString());
+    renderSyncStatusLabel();
+  }
+  // 最後に送信した時刻より後にローカルで変更が入っていれば「未送信」とみなす。
+  function hasUnsyncedLocalChanges(){
+    const mutation = loadLastLocalMutation();
+    if (!mutation) return false;
+    const push = loadLastPush();
+    if (!push) return true;
+    return new Date(mutation).getTime() > new Date(push).getTime();
+  }
 
   let syncStatus = 'idle'; // 'idle' | 'syncing' | 'ok' | 'error'
   let syncErrorMessage = '';
@@ -1045,113 +1097,24 @@
   };
   const SYNC_KEYS = Object.keys(SYNC_KEY_TO_STORAGE_KEY);
 
-  // どのキーが「配列」で、どのキーが「オブジェクト（連想配列）」であるべきかを定義。
-  // サーバー側のデータが何らかの理由で壊れていた場合（想定外の型になっていた場合）
-  // に、その壊れた値をそのまま端末に取り込んでしまわないようにするため。
-  const SYNC_ARRAY_KEYS = new Set(['records','dailyBudget','history','mediaMapHistory']);
-  const SYNC_OBJECT_KEYS = new Set(['groupSettings','mediaMap','ltvSettings','ltvGlobal']);
-  function isValidSyncShape(key, val){
-    if (SYNC_ARRAY_KEYS.has(key)) return Array.isArray(val);
-    if (SYNC_OBJECT_KEYS.has(key)) return val != null && typeof val === 'object' && !Array.isArray(val);
-    return true; // other keys (demographicsMeta, sheetConfig 等) have no fixed shape requirement here
+  // この端末の全データを1つのオブジェクトにまとめる（送信用）。
+  function buildSyncPayload(){
+    const payload = {};
+    SYNC_KEYS.forEach(key=>{
+      const storageKey = SYNC_KEY_TO_STORAGE_KEY[key];
+      try{ payload[key] = JSON.parse(localStorage.getItem(storageKey) || 'null'); }catch(e){ payload[key] = null; }
+    });
+    payload.exportedAt = new Date().toISOString();
+    return payload;
   }
-
-  // Merge strategy per data type. Arrays with a unique `id` are merged by upsert
-  // (local wins per-id since it reflects the most recent edit on this device);
-  // plain objects (keyed maps) are shallow-merged the same way.
-  function mergeForKey(key, serverVal, localVal){
-    // 型が想定と違う（壊れている）場合は、その壊れた側を無視してもう片方を使う。
-    // 両方壊れている場合は諦めて null を返す（呼び出し側で「更新しない」扱いになる）。
-    const serverOk = isValidSyncShape(key, serverVal);
-    const localOk = isValidSyncShape(key, localVal);
-    if (!serverOk && !localOk) return null;
-    if (!serverOk) return localVal;
-    if (!localOk) return serverVal;
-    if (serverVal == null) return localVal;
-    if (localVal == null) return serverVal;
-    switch(key){
-      case 'records': {
-        // 同じ注文IDでも、対応状況（キャンセルかどうか等）が後から変わって内容が
-        // 食い違うことがあるため、単純に「自分の端末を優先」ではなく、
-        // updatedAt（無ければdeletedAt）が新しい方を正しく採用する。
-        // 削除は「もう片方がそれより新しく上書き（再アップロードで復活）」しない
-        // 限り勝つ。
-        function effectiveTime(r){
-          const t = r.deleted ? (r.deletedAt || r.updatedAt) : r.updatedAt;
-          return t ? new Date(t).getTime() : 0;
-        }
-        const map = {};
-        (Array.isArray(serverVal) ? serverVal : []).forEach(x=>{ if (x && x.id) map[x.id]=x; });
-        (Array.isArray(localVal) ? localVal : []).forEach(x=>{
-          if (!x || !x.id) return;
-          const existing = map[x.id];
-          if (!existing){ map[x.id]=x; return; }
-          map[x.id] = effectiveTime(x) >= effectiveTime(existing) ? x : existing;
-        });
-        return Object.values(map);
-      }
-      case 'dailyBudget': {
-        const map = {};
-        (Array.isArray(serverVal) ? serverVal : []).forEach(x=>{ if (x && x.id) map[x.id]=x; });
-        (Array.isArray(localVal) ? localVal : []).forEach(x=>{
-          if (!x || !x.id) return;
-          const existing = map[x.id];
-          if (existing && existing.deleted && !x.deleted) return; // stay deleted
-          map[x.id]=x;
-        });
-        return Object.values(map);
-      }
-      case 'mediaMapHistory': {
-        const map = {};
-        (Array.isArray(serverVal) ? serverVal : []).forEach(x=>{ if (x && x.id) map[x.id]=x; });
-        (Array.isArray(localVal) ? localVal : []).forEach(x=>{
-          if (!x || !x.id) return;
-          const existing = map[x.id];
-          // once undone, stay undone regardless of which side is "newer"
-          if (existing && existing.undone && !x.undone) return;
-          map[x.id]=x;
-        });
-        return Object.values(map).sort((a,b)=> new Date(b.timestamp)-new Date(a.timestamp)).slice(0,50);
-      }
-      case 'history': {
-        const keyOf = h => (h && h.uploadedAt||'') + '|' + (h && h.filename||'');
-        const map = {};
-        (Array.isArray(serverVal) ? serverVal : []).forEach(x=>{ if (x) map[keyOf(x)]=x; });
-        (Array.isArray(localVal) ? localVal : []).forEach(x=>{ if (x) map[keyOf(x)]=x; });
-        return Object.values(map).sort((a,b)=> new Date(b.uploadedAt)-new Date(a.uploadedAt)).slice(0,50);
-      }
-      case 'groupSettings':
-      case 'ltvSettings': {
-        // 各グループ/商材ごとに updatedAt を比較し、新しい方を正しく採用する
-        // （以前は「自分の端末を問答無用で優先」だったため、片方の端末で行った
-        // 設定変更が、もう片方の古いローカルデータで上書きされてしまう不具合が
-        // あった＝成果単価が反映されない、というのはまさにこれが原因だった）。
-        const merged = {};
-        const allKeys = new Set(Object.keys(serverVal||{}).concat(Object.keys(localVal||{})));
-        allKeys.forEach(k=>{
-          const s = (serverVal||{})[k];
-          const l = (localVal||{})[k];
-          if (s == null){ merged[k] = l; return; }
-          if (l == null){ merged[k] = s; return; }
-          const sTime = s.updatedAt ? new Date(s.updatedAt).getTime() : 0;
-          const lTime = l.updatedAt ? new Date(l.updatedAt).getTime() : 0;
-          merged[k] = lTime >= sTime ? l : s;
-        });
-        return merged;
-      }
-      case 'ltvGlobal': {
-        // 単一のオブジェクト全体に対して updatedAt を1つだけ持つので、新しい方を
-        // まるごと採用する（決済手数料率・ロス率・固定費目など利益計算に直結する
-        // ため、こちらも新しい方を正しく優先する）
-        const sTime = (serverVal||{}).updatedAt ? new Date(serverVal.updatedAt).getTime() : 0;
-        const lTime = (localVal||{}).updatedAt ? new Date(localVal.updatedAt).getTime() : 0;
-        return lTime >= sTime ? localVal : serverVal;
-      }
-      case 'mediaMap':
-        return Object.assign({}, serverVal||{}, localVal||{});
-      default:
-        return localVal;
-    }
+  // 受信したデータで、この端末のローカルデータを丸ごと置き換える（マージはしない）。
+  function applySyncPayload(payload){
+    SYNC_KEYS.forEach(key=>{
+      if (!(key in payload)) return; // サーバー側にまだ無いキー（未送信）は触らない
+      const val = payload[key];
+      if (val === null || val === undefined) return; // 空データで上書きしない
+      localStorage.setItem(SYNC_KEY_TO_STORAGE_KEY[key], JSON.stringify(val));
+    });
   }
 
   function setSyncStatus(status, message){
@@ -1160,117 +1123,166 @@
     renderSyncStatusLabel();
   }
 
-  // Google Apps Script Web Apps route through a redirect chain (script.google.com ->
-  // script.googleusercontent.com) that can occasionally return a transient error
-  // (e.g. 404) especially when called from a real https origin like GitHub Pages.
-  // Retry a couple of times with a short delay before giving up.
-  async function fetchWithRetry(url, options, attempts){
-    attempts = attempts || 3;
-    let lastErr;
-    for (let i = 0; i < attempts; i++){
-      try{
-        const res = await fetch(url, options);
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        return res;
-      }catch(err){
-        lastErr = err;
-        if (i < attempts - 1) await new Promise(r => setTimeout(r, 400 * (i + 1)));
+  // 送信：fetch()ではなく隠しiframe＋フォームPOSTで送る。
+  // 理由：Apps ScriptのWebアプリはscript.google.com→script.googleusercontent.com
+  // というリダイレクトを経由するが、fetch（特に mode:'no-cors'）だとこの経路上で
+  // POSTの中身が実際にはサーバーに届かないことがある（届いたように見えて実は
+  // 失敗する）。フォームのブラウザ標準送信はリダイレクトに強く、より確実に届く。
+  // 代わりに、レスポンスの中身をJSで読み取ることはできない（クロスオリジンの
+  // ため）ので、送信が完了したとみなせるまで少し待つだけに留める。
+  function submitViaHiddenForm(url, payloadJson){
+    return new Promise((resolve)=>{
+      let iframe = document.getElementById('lagnetSyncFrame');
+      if (!iframe){
+        iframe = document.createElement('iframe');
+        iframe.id = 'lagnetSyncFrame';
+        iframe.name = 'lagnetSyncFrame';
+        iframe.style.display = 'none';
+        document.body.appendChild(iframe);
       }
-    }
-    throw lastErr;
+      const form = document.createElement('form');
+      form.method = 'POST';
+      form.action = url;
+      form.target = 'lagnetSyncFrame';
+      const input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = 'payload';
+      input.value = payloadJson;
+      form.appendChild(input);
+      document.body.appendChild(form);
+      form.submit();
+      form.remove();
+      setTimeout(resolve, 5000);
+    });
   }
 
-  async function pullAndMergeAll(){
+  // 受信：Apps ScriptのGETではなく、Googleスプレッドシート公式の gviz JSON書き出し
+  // 機能をscriptタグ（JSONP）で読む。fetch()でのGETは上記と同じリダイレクトの都合で
+  // レスポンスを読み取れない（CORSでブロックされる）ことがあるため、こちらの方が
+  // ブラウザ間の相性問題が起きにくい。
+  // 前提：共有スプレッドシートが「リンクを知っている人は閲覧可」になっていること。
+  function fetchBulkViaGviz(sheetId, timeoutMs){
+    timeoutMs = timeoutMs || 15000;
+    return new Promise((resolve, reject)=>{
+      const callbackName = `lagnetGviz_${Date.now()}_${Math.floor(Math.random()*1e6)}`;
+      const params = new URLSearchParams();
+      params.set('tqx', `out:json;responseHandler:${callbackName}`);
+      params.set('sheet', 'AppData');
+      params.set('headers', '1');
+      params.set('tq', "select C where A = 'bulk' order by B");
+      const scriptUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?${params.toString()}`;
+      const script = document.createElement('script');
+      let done = false;
+      function cleanup(){
+        delete window[callbackName];
+        if (script.parentNode) script.parentNode.removeChild(script);
+        clearTimeout(timer);
+      }
+      window[callbackName] = (resp)=>{
+        if (done) return;
+        done = true;
+        cleanup();
+        try{
+          const rows = (resp && resp.table && resp.table.rows) || [];
+          const combined = rows.map(r=> (r && r.c && r.c[0] && r.c[0].v) || '').join('');
+          resolve(combined || null);
+        }catch(e){ reject(e); }
+      };
+      const timer = setTimeout(()=>{
+        if (done) return;
+        done = true;
+        cleanup();
+        reject(new Error('応答がありませんでした（タイムアウト）'));
+      }, timeoutMs);
+      script.onerror = ()=>{
+        if (done) return;
+        done = true;
+        cleanup();
+        reject(new Error('取得に失敗しました（スプレッドシートが「リンクを知っている人は閲覧可」になっているか確認してください）'));
+      };
+      script.src = scriptUrl;
+      document.head.appendChild(script);
+    });
+  }
+
+  // 「送信」ボタン：この端末の全データをサーバーへ送信する（サーバー側は丸ごと上書き）。
+  async function manualPushAll(silent){
     const url = loadSyncUrl();
-    if (!url) return;
-    // 定期ポーリング・タブ復帰・push前マージなど複数の経路からほぼ同時に
-    // 呼ばれ得るため、実行中は多重に走らせない（結果が変わるわけではないが、
-    // 無駄なリクエストとレンダリングの重複を避ける）。
-    if (syncInFlight) return;
+    if (!url){ if (!silent) alert('共有バックエンドURLが設定されていません（データ管理タブで設定してください）。'); return false; }
+    if (syncInFlight){ if (!silent) alert('通信中です。少し待ってからもう一度お試しください。'); return false; }
+    // 安全対策：この端末に受注データが1件も無い状態で送信すると、共有データを
+    // 空で上書きしてしまう事故につながるため、必ず拒否する。
+    if (loadRecords().length === 0){
+      if (!silent) alert('この端末には受注データが1件もないため、送信を中止しました（共有データを誤って消さないための安全対策です）。先に「受信」を行ってください。');
+      return false;
+    }
     syncInFlight = true;
     setSyncStatus('syncing');
     try{
-      const res = await fetchWithRetry(url, { method: 'GET' });
-      const serverData = await res.json();
-      const failedKeys = [];
-      SYNC_KEYS.forEach(key=>{
-        if (key === 'mediaMap' || key === 'mediaMapTimestamps') return; // 下で専用処理
-        // 1つの項目のマージで何か問題が起きても、他の項目の同期が巻き添えで
-        // 止まらないように、キーごとに個別にエラーを吸収する（以前はここが
-        // 1つの try/catch でまとめられていたため、records の同期でエラーが
-        // 起きると継続率などそれ以降の項目が一切同期されなくなる不具合があった）
-        try{
-          const storageKey = SYNC_KEY_TO_STORAGE_KEY[key];
-          let localVal = null;
-          try{ localVal = JSON.parse(localStorage.getItem(storageKey) || 'null'); }catch(e){}
-          const merged = mergeForKey(key, serverData[key], localVal);
-          if (merged != null) localStorage.setItem(storageKey, JSON.stringify(merged));
-        }catch(keyErr){
-          failedKeys.push(key);
-          console.error('sync merge failed for key:', key, keyErr);
-        }
-      });
-      // mediaMap（コード→媒体名の文字列）と mediaMapTimestamps（コードごとの
-      // 最終更新時刻）はペアで扱う必要があるため、通常のキーごとマージとは別に
-      // ここでまとめて「コードごとに新しい方の値を採用する」処理を行う。
-      try{
-        let localMediaMap = null, localTimestamps = null;
-        try{ localMediaMap = JSON.parse(localStorage.getItem(MEDIA_MAP_KEY) || 'null'); }catch(e){}
-        try{ localTimestamps = JSON.parse(localStorage.getItem(MEDIA_MAP_TIMESTAMPS_KEY) || 'null'); }catch(e){}
-        const serverMediaMap = (serverData.mediaMap && typeof serverData.mediaMap === 'object') ? serverData.mediaMap : {};
-        const serverTimestamps = (serverData.mediaMapTimestamps && typeof serverData.mediaMapTimestamps === 'object') ? serverData.mediaMapTimestamps : {};
-        const l = (localMediaMap && typeof localMediaMap === 'object') ? localMediaMap : {};
-        const lt = (localTimestamps && typeof localTimestamps === 'object') ? localTimestamps : {};
-        const mergedMap = {}, mergedTs = {};
-        new Set(Object.keys(serverMediaMap).concat(Object.keys(l))).forEach(code=>{
-          const sTime = serverTimestamps[code] ? new Date(serverTimestamps[code]).getTime() : 0;
-          const lTime = lt[code] ? new Date(lt[code]).getTime() : 0;
-          if (l[code] === undefined){ mergedMap[code] = serverMediaMap[code]; mergedTs[code] = serverTimestamps[code]; return; }
-          if (serverMediaMap[code] === undefined){ mergedMap[code] = l[code]; mergedTs[code] = lt[code]; return; }
-          if (lTime >= sTime){ mergedMap[code] = l[code]; mergedTs[code] = lt[code]; }
-          else { mergedMap[code] = serverMediaMap[code]; mergedTs[code] = serverTimestamps[code]; }
-        });
-        localStorage.setItem(MEDIA_MAP_KEY, JSON.stringify(mergedMap));
-        localStorage.setItem(MEDIA_MAP_TIMESTAMPS_KEY, JSON.stringify(mergedTs));
-      }catch(mmErr){
-        failedKeys.push('mediaMap');
-        console.error('sync merge failed for mediaMap:', mmErr);
-      }
-      localStorage.setItem(SYNC_LAST_KEY, new Date().toISOString());
-      if (failedKeys.length){
-        setSyncStatus('error', `一部のデータの同期に失敗しました（${failedKeys.join(', ')}）。他のデータは正常に同期されています。`);
-      } else {
-        setSyncStatus('ok');
-      }
-      renderAll();
+      const payload = buildSyncPayload();
+      await submitViaHiddenForm(url, JSON.stringify({ key: 'bulk', value: payload }));
+      localStorage.setItem(LAST_PUSH_KEY, new Date().toISOString());
+      setSyncStatus('ok');
+      renderLastUpdatesMeta();
+      if (!silent) alert('サーバーへ送信しました。');
+      return true;
     }catch(err){
-      setSyncStatus('error', err.message || 'Failed to fetch');
+      setSyncStatus('error', (err && err.message) || String(err));
+      if (!silent) alert('送信に失敗しました：' + ((err && err.message) || err));
+      return false;
     }finally{
       syncInFlight = false;
     }
   }
 
-  async function pushKey(key){
+  // 「受信」ボタン：サーバーの最新データを取得し、この端末のデータを丸ごと置き換える。
+  async function manualPullAll(silent){
     const url = loadSyncUrl();
-    if (!url) return;
-    // 送信前に必ずサーバーの最新状態を取り込んでからマージする。これをせず
-    // 「今ローカルにある値」をそのまま送ってしまうと、自分がページを開いて
-    // から今までの間に他の端末が保存した変更を、まるごと上書きして消して
-    // しまう（別端末で開くたびに表示がバラバラになっていた不具合の原因）。
-    await pullAndMergeAll();
-    const storageKey = SYNC_KEY_TO_STORAGE_KEY[key];
-    let value = null;
-    try{ value = JSON.parse(localStorage.getItem(storageKey) || 'null'); }catch(e){}
+    if (!url){ if (!silent) alert('共有バックエンドURLが設定されていません（データ管理タブで設定してください）。'); return false; }
+    if (syncInFlight){ if (!silent) alert('通信中です。少し待ってからもう一度お試しください。'); return false; }
+    if (!silent && hasUnsyncedLocalChanges()){
+      const ok = confirm('この端末にはまだ送信していない変更が残っている可能性があります。先に受信すると、その変更は失われます。\n\n共有データを取得して、この端末のデータを置き換えます。よろしいですか？');
+      if (!ok) return false;
+    }
+    syncInFlight = true;
+    setSyncStatus('syncing');
     try{
-      const res = await fetchWithRetry(url, { method: 'POST', body: JSON.stringify({ key, value }) });
-      let body = null;
-      try{ body = await res.json(); }catch(e){ /* some deployments may not echo JSON back; tolerate */ }
-      if (body && body.error) throw new Error(body.error);
-      localStorage.setItem(SYNC_LAST_KEY, new Date().toISOString());
+      const sheetId = loadSyncSheetId();
+      const combined = await fetchBulkViaGviz(sheetId);
+      if (!combined){
+        setSyncStatus('error', '共有データがまだありません（一度も送信されていません）');
+        if (!silent) alert('共有データがまだありません（一度も送信されていません）。');
+        return false;
+      }
+      let payload;
+      try{ payload = JSON.parse(combined); }catch(e){
+        setSyncStatus('error', '取得したデータの形式が正しくありませんでした');
+        if (!silent) alert('取得したデータの形式が正しくありませんでした。');
+        return false;
+      }
+      // 安全対策：取得した共有データが空（受注データ0件）なのに、この端末には
+      // 既にデータがある場合は、誤って良いデータを消してしまわないよう中止する。
+      const incomingCount = Array.isArray(payload.records) ? payload.records.length : 0;
+      const localCount = loadRecords().length;
+      if (incomingCount === 0 && localCount > 0){
+        setSyncStatus('error', '共有データが空だったため、受信を中止しました');
+        if (!silent) alert('共有データが空だったため、受信を中止しました（この端末の既存データを守るための安全対策です）。');
+        return false;
+      }
+      applySyncPayload(payload);
+      localStorage.setItem(LAST_PULL_KEY, new Date().toISOString());
+      // 受信直後はサーバーと完全に一致しているはずなので、未送信の変更は無いものとしてリセットする
+      localStorage.removeItem(LAST_LOCAL_MUTATION_KEY);
       setSyncStatus('ok');
-      renderLastUpdatesMeta();
+      renderAll();
+      if (!silent) alert('共有データを取得しました。');
+      return true;
     }catch(err){
-      setSyncStatus('error', err.message || 'Failed to fetch');
+      setSyncStatus('error', (err && err.message) || String(err));
+      if (!silent) alert('受信に失敗しました：' + ((err && err.message) || err));
+      return false;
+    }finally{
+      syncInFlight = false;
     }
   }
 
@@ -1279,15 +1291,15 @@
     if (!el) return;
     const url = loadSyncUrl();
     if (!url){ el.textContent = '未設定（この端末のみ）'; return; }
-    if (syncStatus === 'syncing'){ el.textContent = '同期中…'; return; }
+    if (syncStatus === 'syncing'){ el.textContent = '通信中…'; return; }
     if (syncStatus === 'error'){ el.textContent = `エラー: ${syncErrorMessage}`; return; }
-    const last = loadSyncLast();
-    if (last){
-      const dt = new Date(last);
-      el.textContent = `共有: 有効（最終同期 ${dt.getMonth()+1}/${dt.getDate()} ${String(dt.getHours()).padStart(2,'0')}:${String(dt.getMinutes()).padStart(2,'0')}）`;
-    } else {
-      el.textContent = '共有: 有効（未同期）';
+    function fmt(iso){
+      if (!iso) return '未実施';
+      const dt = new Date(iso);
+      return `${dt.getMonth()+1}/${dt.getDate()} ${String(dt.getHours()).padStart(2,'0')}:${String(dt.getMinutes()).padStart(2,'0')}`;
     }
+    const unsynced = hasUnsyncedLocalChanges() ? '　⚠未送信の変更あり' : '';
+    el.textContent = `最終送信: ${fmt(loadLastPush())}　最終受信: ${fmt(loadLastPull())}${unsynced}`;
   }
 
   // ---------- encoding detection & CSV parse ----------
@@ -2182,7 +2194,7 @@
       }
     });
     localStorage.setItem(LTV_SETTINGS_KEY, JSON.stringify(obj));
-    pushKey('ltvSettings');
+    markLocalMutation();
   }
   function getLtvCategorySettings(category){
     const all = loadLtvSettings();
@@ -2228,7 +2240,7 @@
   function saveLtvGlobal(obj){
     obj.updatedAt = new Date().toISOString();
     localStorage.setItem(LTV_GLOBAL_KEY, JSON.stringify(obj));
-    pushKey('ltvGlobal');
+    markLocalMutation();
   }
 
   function retentionRateFor(retentionObj, cycle){
@@ -3994,7 +4006,8 @@
       const dt = new Date(iso);
       return `${dt.getMonth()+1}/${dt.getDate()} ${String(dt.getHours()).padStart(2,'0')}:${String(dt.getMinutes()).padStart(2,'0')}`;
     }
-    el.innerHTML = `受注CSV取込: ${fmt(lastUpload)}　広告費更新: ${fmt(lastBudget)}${loadSyncUrl() ? `　共有同期: ${fmt(loadSyncLast())}` : ''}`;
+    const unsynced = hasUnsyncedLocalChanges() ? '　⚠未送信の変更あり' : '';
+    el.innerHTML = `受注CSV取込: ${fmt(lastUpload)}　広告費更新: ${fmt(lastBudget)}${loadSyncUrl() ? `　最終送信: ${fmt(loadLastPush())}　最終受信: ${fmt(loadLastPull())}${unsynced}` : ''}`;
   }
 
   // ---------- summary tab ----------
@@ -4700,16 +4713,22 @@
     const removed = deleteRecordsByGroup(group);
     document.getElementById('deleteGroupStatus').textContent = `${removed}件削除しました`;
     renderAll();
-    pushKey('records');
+    markLocalMutation();
   });
   document.getElementById('sheetParseBtn').addEventListener('click', handlePasteParse);
 
   document.getElementById('syncSaveBtn').addEventListener('click', ()=>{
     const url = document.getElementById('syncUrlInput').value.trim();
+    const sheetId = document.getElementById('syncSheetIdInput').value.trim();
     saveSyncUrl(url);
-    if (url) pullAndMergeAll();
-    else renderSyncStatusLabel();
+    saveSyncSheetId(sheetId);
+    renderSyncStatusLabel();
+    alert('連携設定を保存しました。');
   });
+  document.getElementById('syncPullBtn').addEventListener('click', ()=>{ manualPullAll(false); });
+  document.getElementById('syncPushBtn').addEventListener('click', ()=>{ manualPushAll(false); });
+  document.getElementById('headerPullBtn').addEventListener('click', ()=>{ manualPullAll(false); });
+  document.getElementById('headerPushBtn').addEventListener('click', ()=>{ manualPushAll(false); });
 
   document.getElementById('budgetAddBtn').addEventListener('click', ()=>{
     const date = document.getElementById('budgetDate').value;
@@ -5354,23 +5373,9 @@
           <div class="panel" style="margin-top:12px;background:var(--good-soft);border-color:var(--good);">
             <strong>取り込み完了:</strong> 新規 ${fmtNum(result.added)}件 / 更新 ${fmtNum(result.updated)}件${result.skipped?` / スキップ ${fmtNum(result.skipped)}件`:''}
             （保存合計 ${fmtNum(result.total)}件）
-            <div id="uploadSyncStatus" style="margin-top:6px;font-size:11.5px;color:var(--text-dim);">${loadSyncUrl()?'共有バックエンドへ反映中…':'共有設定なし（この端末のみ）'}</div>
+            <div id="uploadSyncStatus" style="margin-top:6px;font-size:11.5px;color:var(--text-dim);">${loadSyncUrl()?'⚠ まだ他の端末には反映されていません。上の「送信」ボタンを押してください。':'共有設定なし（この端末のみ）'}</div>
           </div>`;
         renderAll();
-        // the push to the shared backend is fire-and-forget; check back shortly after
-        // and report whether it actually succeeded, since a network/permission error
-        // there would otherwise be invisible until someone happens to look elsewhere.
-        if (loadSyncUrl()){
-          setTimeout(()=>{
-            const statusEl = document.getElementById('uploadSyncStatus');
-            if (!statusEl) return;
-            if (syncStatus === 'error'){
-              statusEl.innerHTML = `<span style="color:var(--danger);">⚠ 共有バックエンドへの反映に失敗しました: ${escapeHtml(syncErrorMessage)}</span>`;
-            } else {
-              statusEl.innerHTML = `<span style="color:var(--good);">✓ 共有バックエンドに反映しました</span>`;
-            }
-          }, 1500);
-        }
       }catch(err){
         document.getElementById('uploadResult').innerHTML = `
           <div class="panel" style="margin-top:12px;background:var(--danger-soft);border-color:var(--danger);">
@@ -5405,7 +5410,6 @@
         document.getElementById('tab-'+t).style.display = (t===btn.dataset.tab) ? '' : 'none';
       });
       renderAll();
-      if (loadSyncUrl()) pullAndMergeAll();
       if (btn.dataset.tab === 'manage'){
         const cfg = loadSheetConfig();
         if (cfg.url){
@@ -5591,40 +5595,19 @@
     saveSheetConfig(cfg);
   });
   document.getElementById('syncUrlInput').value = loadSyncUrl();
+  document.getElementById('syncSheetIdInput').value = loadSyncSheetId();
   renderSheetLastSyncLabel();
   renderSyncStatusLabel();
 
   renderAll();
-  // 広告費スプレッドシートの自動取込を、以前は「データ管理」タブを開いた時だけ
-  // 行っていたが、ページを開いた時点ですぐに最新化されるようにする。
-  // 共有データの同期（他端末で保存されたスプレッドシートURLの反映）が終わって
-  // からでないと、まだこの端末で一度もURLを入れたことがない場合に空振りして
-  // しまうため、pullAndMergeAllの完了を待ってから実行する。
-  function autoFetchBudgetOnLoad(){
-    const cfg = loadSheetConfig();
-    if (cfg.url){
-      document.getElementById('sheetUrl').value = cfg.url;
-      handleSheetFetch(true);
-    }
+  // 広告費スプレッドシートの自動取込（受信ボタンとは別枠。以前と同様にページを
+  // 開いた時点ですぐに最新化する。共有データ自体はもう自動取得しないので、
+  // 他端末の更新を見るには「受信」ボタンを押す必要がある）。
+  const budgetCfg = loadSheetConfig();
+  if (budgetCfg.url){
+    document.getElementById('sheetUrl').value = budgetCfg.url;
+    handleSheetFetch(true);
   }
-  if (loadSyncUrl()){
-    pullAndMergeAll().then(autoFetchBudgetOnLoad).catch(autoFetchBudgetOnLoad);
-  } else {
-    autoFetchBudgetOnLoad();
-  }
-
-  // ---------- 自動ポーリング（スプレッドシートに近い体感にするため） ----------
-  // タブを開きっぱなしにしていても他の端末の更新が自動で反映されるよう、
-  // 一定間隔でサーバーの最新状態を取り込む。また、他のタブ/アプリに切り替えて
-  // から戻ってきた瞬間にも即座に取り込む（バックグラウンドタブでの無駄な
-  // ポーリングはブラウザ側で間引かれるため、visibilitychange と併用する）。
-  const AUTO_PULL_INTERVAL_MS = 15000;
-  setInterval(()=>{
-    if (document.visibilityState === 'visible' && loadSyncUrl()) pullAndMergeAll();
-  }, AUTO_PULL_INTERVAL_MS);
-  document.addEventListener('visibilitychange', ()=>{
-    if (document.visibilityState === 'visible' && loadSyncUrl()) pullAndMergeAll();
-  });
 })();
 </script>
 </body>
