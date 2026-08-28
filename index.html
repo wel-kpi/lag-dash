@@ -805,7 +805,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.1.0";
+  const APP_VERSION = "4.2.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -2692,7 +2692,6 @@
         <div class="kpi"><div class="label">初期件数（フロント/アップセル）</div><div class="value">${fmtNum(Math.round(initFront))} / ${fmtNum(Math.round(initUpsell))}</div><div class="sub">アップセル率 ${isFinite(upsellRate)?upsellRate.toFixed(1)+'%':'—'}</div></div>
         <div class="kpi"><div class="label">キャンセル率</div><div class="value ${cancelRate>15?'danger':''}">${isFinite(cancelRate)?cancelRate.toFixed(1)+'%':'—'}</div><div class="sub">${fmtNum(Math.round(cancelCount))}件</div></div>
         <div class="kpi"><div class="label">CPA</div><div class="value">${isFinite(cpa)?fmtYen(cpa):'—'}</div></div>
-        <div class="kpi"><div class="label">2年間 累計件数</div><div class="value">${fmtNum(Math.round(sim.totalOrders))}</div></div>
         <div class="kpi"><div class="label">2年間 売上</div><div class="value accent">${fmtYen(sim.totalRevenue)}</div></div>
         <div class="kpi"><div class="label">2年間 広告費</div><div class="value">${fmtYen(sim.totalAdCost)}</div></div>
         <div class="kpi"><div class="label">2年間 利益</div><div class="value ${sim.totalProfit>=0?'good':'danger'}">${fmtYen(sim.totalProfit)}</div><div class="sub">利益率 ${isFinite(profitRate)?profitRate.toFixed(1)+'%':'—'}</div></div>
@@ -2913,6 +2912,17 @@
         </tr>
       </thead>
       <tbody>
+      ${(()=>{
+        // 合計行のコストも、内訳（原価・決済手数料・ロス・固定費目・1回きりコスト）を
+        // クリックで確認できるように、各行の内訳を合算しておく。
+        const colspanBefore = 1 + 4 + (hasExtraProducts?1:0) + 1 + 1; // ヶ月目 + フロント2 + アップセル2 + (追加商品) + 合計件数 + 売上
+        const colspanAfter = 1; // 利益
+        const totalDetail = activeSim.rows.reduce((acc,r)=>{
+          acc.cogs += r.cogs||0; acc.fee += r.fee||0; acc.loss += r.loss||0;
+          acc.fixedCost += r.fixedCost||0; acc.oneTimeCost += r.oneTimeCost||0;
+          return acc;
+        }, { cogs:0, fee:0, loss:0, fixedCost:0, oneTimeCost:0 });
+        return `
       <tr class="total-row-top">
         <td>合計</td>
         <td class="num" style="text-align:right;">—</td>
@@ -2923,9 +2933,12 @@
         <td class="num" style="text-align:right;">${fmtNum(Math.round(activeSim.totalOrders))}</td>
         <td class="num" style="text-align:right;background:var(--blue-soft);${moneyStyle(activeSim.totalRevenue)}">${fmtYen(activeSim.totalRevenue)}</td>
         <td class="num" style="text-align:right;">${fmtYen(activeSim.totalAdCost)}</td>
-        <td class="num" style="text-align:right;background:var(--danger-soft);${moneyStyle(activeSim.totalCogs+activeSim.totalOtherCost)}">${fmtYen(activeSim.totalCogs+activeSim.totalOtherCost)}</td>
+        ${costCellHtml('total', activeSim.totalCogs+activeSim.totalOtherCost)}
         <td class="num" style="text-align:right;background:var(--good-soft);font-weight:700;${moneyStyle(activeSim.totalProfit)}">${fmtYen(activeSim.totalProfit)}<span style="font-size:10.5px;color:var(--text-dim);font-weight:400;"> （利益率 ${activeSim.totalRevenue>0?(activeSim.totalProfit/activeSim.totalRevenue*100).toFixed(1)+'%':'—'}）</span></td>
       </tr>
+      ${costDetailRowHtml('total', totalDetail, colspanBefore, colspanAfter)}
+        `;
+      })()}
       ${activeSim.rows.map((r,idx)=>{
         const rowKey = 'm'+r.month+'-'+idx;
         const colspanBefore = 1 + 4 + (hasExtraProducts?1:0) + 1 + 1; // ヶ月目 + フロント2 + アップセル2 + (追加商品) + 合計件数 + 売上
