@@ -540,8 +540,10 @@
       </div>
       <div class="controls" style="margin-top:10px;">
         <button class="btn small" id="ltvAdCostBreakdownToggle">広告費の内訳を見る（想定外に高いCPAの原因調査に）</button>
+        <button class="btn small" id="ltvOfferBreakdownToggle" style="display:none;">「すべてオファー」の内訳を見る（合計が合わない時の原因調査に）</button>
       </div>
       <div id="ltvAdCostBreakdownArea" style="display:none;margin-top:10px;"></div>
+      <div id="ltvOfferBreakdownArea" style="display:none;margin-top:10px;"></div>
     </div>
 
     <div class="panel">
@@ -584,7 +586,8 @@
         <h3 style="font-size:12.5px;color:var(--text-dim);margin:0 0 10px;">お届け頻度</h3>
         <div id="ltvIntervalSettings"></div>
 
-        <h3 style="font-size:12.5px;color:var(--text-dim);margin:20px 0 10px;">単価・原価（円）</h3>
+        <h3 style="font-size:12.5px;color:var(--text-dim);margin:20px 0 10px;">単価・原価（円）<span style="font-weight:400;">— オファー単位で設定できます</span></h3>
+        <div id="ltvPriceCogsNote"></div>
         <div class="table-wrap"><table class="data" id="ltvPriceCogsTable"></table></div>
 
         <h3 style="font-size:12.5px;color:var(--text-dim);margin:20px 0 10px;">追加商品（シークレットコースなど、移行後の商品コード別）<span style="font-weight:400;">— オファー単位で設定、売上に上乗せされます</span></h3>
@@ -784,7 +787,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "3.27.0";
+  const APP_VERSION = "3.29.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -2009,6 +2012,8 @@
       upsellPriceFirst: 0, upsellPriceRepeat: 0,
       frontCogsFirst: 0, frontCogsRepeat: 0,
       upsellCogsFirst: 0, upsellCogsRepeat: 0,
+      offerPriceCogs: {},  // { [オファー名]: { frontPriceFirst, frontPriceRepeat, upsellPriceFirst, upsellPriceRepeat, frontCogsFirst, frontCogsRepeat, upsellCogsFirst, upsellCogsRepeat } }
+                           // オファーごとに単価・原価が違う場合の上書き。無いオファーは商材共通のデフォルトにフォールバックする。
       frontRetention: {},  // { '2': 0.54, '3': 0.53, ... '13': ..., 'rest': 0.9 } — 商材共通のデフォルト
       upsellRetention: {},
       retentionByMonth: {}, // { [獲得月]: { frontRetention:{...}, upsellRetention:{...} } } — 月別の上書き
@@ -2020,6 +2025,20 @@
                                // シークレットコースなど、途中で移行した別商品コードの分をオファー単位で個別設定し売上に上乗せする。
                                // ''キーは「オファー指定なし（商材全体）」向け。他のオファーには反映されない。
     };
+  }
+  // オファーごとの単価・原価。設定が無いオファーは商材共通のデフォルトにフォールバック。
+  function getOfferPriceCogs(category, offer){
+    const s = getLtvCategorySettings(category);
+    const offerKey = offer || '';
+    const override = s.offerPriceCogs && s.offerPriceCogs[offerKey];
+    const base = {
+      frontPriceFirst: s.frontPriceFirst, frontPriceRepeat: s.frontPriceRepeat,
+      upsellPriceFirst: s.upsellPriceFirst, upsellPriceRepeat: s.upsellPriceRepeat,
+      frontCogsFirst: s.frontCogsFirst, frontCogsRepeat: s.frontCogsRepeat,
+      upsellCogsFirst: s.upsellCogsFirst, upsellCogsRepeat: s.upsellCogsRepeat
+    };
+    if (!override) return Object.assign(base, { isOfferOverride:false });
+    return Object.assign({}, base, override, { isOfferOverride:true });
   }
   // 旧形式（extraProducts が商材直下の配列だった時代）のデータを、オファー指定なし
   // ('' キー) の追加商品として読み替える後方互換ヘルパー
@@ -2248,6 +2267,7 @@
   // first acquired), regardless of which type's cycle triggered that month.
   function simulateLTV(category, initialFront, initialUpsell, initialAdCost, offer, acquisitionMonthKey, retentionOverride){
     const s = getLtvCategorySettings(category);
+    const pc = getOfferPriceCogs(category, offer); // オファーごとの単価・原価（設定が無ければ商材共通のデフォルト）
     const g = loadLtvGlobal();
     initialAdCost = initialAdCost || 0;
     const retention = retentionOverride || getLtvRetention(category, acquisitionMonthKey || currentMonthKey(), offer);
@@ -2267,8 +2287,8 @@
       const rate = cycle > 1 ? retentionRateFor(retention.frontRetention, cycle) : 1;
       if (cycle > 1) frontCount = frontCount * rate;
       const month = dayToMonthNumber(frontSchedule.days[cycle-1]);
-      const price = cycle === 1 ? s.frontPriceFirst : s.frontPriceRepeat;
-      const cogsUnit = cycle === 1 ? s.frontCogsFirst : s.frontCogsRepeat;
+      const price = cycle === 1 ? pc.frontPriceFirst : pc.frontPriceRepeat;
+      const cogsUnit = cycle === 1 ? pc.frontCogsFirst : pc.frontCogsRepeat;
       const b = bucket(month);
       b.frontCount += frontCount;
       b.revenue += frontCount * price;
@@ -2281,8 +2301,8 @@
       const rate = cycle > 1 ? retentionRateFor(retention.upsellRetention, cycle) : 1;
       if (cycle > 1) upsellCount = upsellCount * rate;
       const month = dayToMonthNumber(upsellSchedule.days[cycle-1]);
-      const price = cycle === 1 ? s.upsellPriceFirst : s.upsellPriceRepeat;
-      const cogsUnit = cycle === 1 ? s.upsellCogsFirst : s.upsellCogsRepeat;
+      const price = cycle === 1 ? pc.upsellPriceFirst : pc.upsellPriceRepeat;
+      const cogsUnit = cycle === 1 ? pc.upsellCogsFirst : pc.upsellCogsRepeat;
       const b = bucket(month);
       b.upsellCount += upsellCount;
       b.revenue += upsellCount * price;
@@ -2502,33 +2522,69 @@
     let progressCancelTotal=0, landingCancelTotal=0, progressCostTotal=0, landingCostTotal=0;
     let combinedLanding = null; // used for the adjustment UI; only meaningful for a single selected category
 
-    if (ltvSelectedCategory){
-      const split = computeLandingSplit(ltvSelectedCategory, ltvSelectedOffer, ltvSelectedMonth);
-      const landingInfo = computeLanding(ltvSelectedCategory, ltvSelectedOffer, ltvSelectedMonth);
-      progressSim = simulateLTV(ltvSelectedCategory, split.frontCount, split.upsellCount, landingInfo.cost, ltvSelectedOffer, ltvSelectedMonth);
-      progressSim.__initialTotal = split.frontCount + split.upsellCount;
-      landingSim = simulateLTV(ltvSelectedCategory, split.frontLanding, split.upsellLanding, landingInfo.landingCost, ltvSelectedOffer, ltvSelectedMonth);
-      landingSim.__initialTotal = split.frontLanding + split.upsellLanding;
-      initFrontTotal = split.frontCount; initUpsellTotal = split.upsellCount;
-      initFrontLandingTotal = split.frontLanding; initUpsellLandingTotal = split.upsellLanding;
-      progressCancelTotal = landingInfo.cancelCount; landingCancelTotal = landingInfo.autoLandingCancelCount;
-      progressCostTotal = landingInfo.cost; landingCostTotal = landingInfo.landingCost;
-      combinedLanding = landingInfo;
-    } else {
-      // すべて：商材ごとに個別シミュレーションを回して月単位で合算
+    // 商材・オファーごとに単価が違うことがあるため、「すべてオファー」表示の時は
+    // 1回だけまとめてシミュレーションするのではなく、実在するオファーごとに
+    // 個別にシミュレーションしてから合算する（そうしないと、複数オファーの単価を
+    // 商材共通の1つの単価で計算してしまい、金額がおかしくなる）。
+    function simulateForCategoryOffer(category, offerFilter, monthKey){
+      let offersToRun;
+      if (offerFilter){
+        offersToRun = [offerFilter];
+      } else {
+        const groups = uniqueSorted(records.filter(r=>r.category===category && r.group).map(r=>r.group));
+        offersToRun = uniqueSorted(groups.map(g=>resolveOffer(category, g)));
+        if (!offersToRun.length) offersToRun = [''];
+      }
       const progressSims = [], landingSims = [];
-      targetCategories.forEach(cat=>{
-        const split = computeLandingSplit(cat, '', ltvSelectedMonth);
-        const landingInfo = computeLanding(cat, '', ltvSelectedMonth);
-        const pSim = simulateLTV(cat, split.frontCount, split.upsellCount, landingInfo.cost, '', ltvSelectedMonth);
+      let initFront=0, initUpsell=0, initFrontLanding=0, initUpsellLanding=0;
+      let cancelCount=0, autoLandingCancelCount=0, cost=0, landingCost=0;
+      const offerBreakdown = []; // 「すべて」の内訳確認用：どのオファーがいくつ・いくら計上されているか
+      offersToRun.forEach(off=>{
+        const split = computeLandingSplit(category, off, monthKey);
+        const landingInfo = computeLanding(category, off, monthKey);
+        const pSim = simulateLTV(category, split.frontCount, split.upsellCount, landingInfo.cost, off, monthKey);
         pSim.__initialTotal = split.frontCount + split.upsellCount;
-        const lSim = simulateLTV(cat, split.frontLanding, split.upsellLanding, landingInfo.landingCost, '', ltvSelectedMonth);
+        const lSim = simulateLTV(category, split.frontLanding, split.upsellLanding, landingInfo.landingCost, off, monthKey);
         lSim.__initialTotal = split.frontLanding + split.upsellLanding;
         progressSims.push(pSim); landingSims.push(lSim);
-        initFrontTotal += split.frontCount; initUpsellTotal += split.upsellCount;
-        initFrontLandingTotal += split.frontLanding; initUpsellLandingTotal += split.upsellLanding;
-        progressCancelTotal += landingInfo.cancelCount; landingCancelTotal += landingInfo.autoLandingCancelCount;
-        progressCostTotal += landingInfo.cost; landingCostTotal += landingInfo.landingCost;
+        initFront += split.frontCount; initUpsell += split.upsellCount;
+        initFrontLanding += split.frontLanding; initUpsellLanding += split.upsellLanding;
+        cancelCount += landingInfo.cancelCount; autoLandingCancelCount += landingInfo.autoLandingCancelCount;
+        cost += landingInfo.cost; landingCost += landingInfo.landingCost;
+        offerBreakdown.push({
+          offer: off || '（オファー無し）',
+          initFront: split.frontCount, initUpsell: split.upsellCount,
+          progressRevenue2yr: pSim.totalRevenue, landingRevenue2yr: lSim.totalRevenue
+        });
+      });
+      return {
+        progressSim: mergeSims(progressSims), landingSim: mergeSims(landingSims),
+        initFront, initUpsell, initFrontLanding, initUpsellLanding,
+        cancelCount, autoLandingCancelCount, cost, landingCost, offerBreakdown
+      };
+    }
+
+    let lastOfferBreakdown = null; // すべてオファー表示時の内訳を、下のUIから参照できるように保持
+
+    if (ltvSelectedCategory){
+      const r = simulateForCategoryOffer(ltvSelectedCategory, ltvSelectedOffer, ltvSelectedMonth);
+      progressSim = r.progressSim; landingSim = r.landingSim;
+      initFrontTotal = r.initFront; initUpsellTotal = r.initUpsell;
+      initFrontLandingTotal = r.initFrontLanding; initUpsellLandingTotal = r.initUpsellLanding;
+      progressCancelTotal = r.cancelCount; landingCancelTotal = r.autoLandingCancelCount;
+      progressCostTotal = r.cost; landingCostTotal = r.landingCost;
+      combinedLanding = computeLanding(ltvSelectedCategory, ltvSelectedOffer, ltvSelectedMonth);
+      if (!ltvSelectedOffer) lastOfferBreakdown = r.offerBreakdown; // 「すべてオファー」を見ている時だけ内訳を持つ
+    } else {
+      // すべて商材：商材ごとに（さらにその中の実在オファーごとに）個別シミュレーションして合算
+      const progressSims = [], landingSims = [];
+      targetCategories.forEach(cat=>{
+        const r = simulateForCategoryOffer(cat, '', ltvSelectedMonth);
+        progressSims.push(r.progressSim); landingSims.push(r.landingSim);
+        initFrontTotal += r.initFront; initUpsellTotal += r.initUpsell;
+        initFrontLandingTotal += r.initFrontLanding; initUpsellLandingTotal += r.initUpsellLanding;
+        progressCancelTotal += r.cancelCount; landingCancelTotal += r.autoLandingCancelCount;
+        progressCostTotal += r.cost; landingCostTotal += r.landingCost;
       });
       progressSim = mergeSims(progressSims);
       landingSim = mergeSims(landingSims);
@@ -2626,6 +2682,43 @@
     } else {
       adCostToggleBtn.style.display = 'none';
       adCostArea.style.display = 'none';
+    }
+
+    // オファー内訳（「すべてオファー」の合計値がどう構成されているか確認する用）
+    const offerBreakdownToggleBtn = document.getElementById('ltvOfferBreakdownToggle');
+    const offerBreakdownArea = document.getElementById('ltvOfferBreakdownArea');
+    if (lastOfferBreakdown && lastOfferBreakdown.length){
+      offerBreakdownToggleBtn.style.display = '';
+      offerBreakdownToggleBtn.onclick = ()=>{
+        if (offerBreakdownArea.style.display !== 'none'){
+          offerBreakdownArea.style.display = 'none';
+          return;
+        }
+        const sumProgress = lastOfferBreakdown.reduce((s,x)=>s+x.progressRevenue2yr,0);
+        const sumLanding = lastOfferBreakdown.reduce((s,x)=>s+x.landingRevenue2yr,0);
+        offerBreakdownArea.innerHTML = `
+          <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px;">獲得月「${escapeHtml(ltvSelectedMonth)}」時点で「すべてオファー」に実際に含まれているオファーの一覧です。ここに想定していないオファー名が出ていたり、件数・単価がおかしい場合は、その内容が合計にそのまま影響します。</div>
+          <div class="table-wrap">
+            <table class="data">
+              <thead><tr><th>オファー</th><th class="num">初期件数(フロント/アップセル)</th><th class="num">2年間売上(進捗)</th><th class="num">2年間売上(着地想定)</th></tr></thead>
+              <tbody>${lastOfferBreakdown.map(x=>`
+                <tr>
+                  <td style="text-align:left;">${escapeHtml(x.offer)}</td>
+                  <td class="num">${fmtNum(Math.round(x.initFront))} / ${fmtNum(Math.round(x.initUpsell))}</td>
+                  <td class="num">${fmtYen(x.progressRevenue2yr)}</td>
+                  <td class="num">${fmtYen(x.landingRevenue2yr)}</td>
+                </tr>
+              `).join('')}
+              <tr class="total-row-top"><td>合計</td><td class="num" style="text-align:right;">—</td><td class="num" style="text-align:right;">${fmtYen(sumProgress)}</td><td class="num" style="text-align:right;">${fmtYen(sumLanding)}</td></tr>
+              </tbody>
+            </table>
+          </div>
+        `;
+        offerBreakdownArea.style.display = '';
+      };
+    } else {
+      offerBreakdownToggleBtn.style.display = 'none';
+      offerBreakdownArea.style.display = 'none';
     }
 
     // scenario toggle + cycle detail table
@@ -2870,36 +2963,67 @@
     document.getElementById('ltvRetentionSettingsBody').style.display = '';
     document.getElementById('ltvRetentionSettingsAllNote').style.display = 'none';
 
-    // ---- settings: price / cogs table ----
-    const s = getLtvCategorySettings(ltvSelectedCategory);
+    // ---- settings: price / cogs table（オファーごとに異なる値を持てる） ----
+    const priceCogsOfferKey = ltvSelectedOffer || '';
+    const pcInfo = getOfferPriceCogs(ltvSelectedCategory, priceCogsOfferKey);
     const priceCogsRows = [
-      { key:'frontPriceFirst', label:'フロント初回単価', val:s.frontPriceFirst },
-      { key:'frontPriceRepeat', label:'フロント継続単価', val:s.frontPriceRepeat },
-      { key:'upsellPriceFirst', label:'アップセル初回単価', val:s.upsellPriceFirst },
-      { key:'upsellPriceRepeat', label:'アップセル継続単価', val:s.upsellPriceRepeat },
-      { key:'frontCogsFirst', label:'フロント初回原価', val:s.frontCogsFirst },
-      { key:'frontCogsRepeat', label:'フロント継続原価', val:s.frontCogsRepeat },
-      { key:'upsellCogsFirst', label:'アップセル初回原価', val:s.upsellCogsFirst },
-      { key:'upsellCogsRepeat', label:'アップセル継続原価', val:s.upsellCogsRepeat }
+      { key:'frontPriceFirst', label:'フロント初回単価', val:pcInfo.frontPriceFirst },
+      { key:'frontPriceRepeat', label:'フロント継続単価', val:pcInfo.frontPriceRepeat },
+      { key:'upsellPriceFirst', label:'アップセル初回単価', val:pcInfo.upsellPriceFirst },
+      { key:'upsellPriceRepeat', label:'アップセル継続単価', val:pcInfo.upsellPriceRepeat },
+      { key:'frontCogsFirst', label:'フロント初回原価', val:pcInfo.frontCogsFirst },
+      { key:'frontCogsRepeat', label:'フロント継続原価', val:pcInfo.frontCogsRepeat },
+      { key:'upsellCogsFirst', label:'アップセル初回原価', val:pcInfo.upsellCogsFirst },
+      { key:'upsellCogsRepeat', label:'アップセル継続原価', val:pcInfo.upsellCogsRepeat }
     ];
+    document.getElementById('ltvPriceCogsNote').innerHTML = `
+      <div class="note-box">
+        ${priceCogsOfferKey?'オファー「'+escapeHtml(priceCogsOfferKey)+'」':'すべてのオファー共通'}の単価・原価を編集しています。${pcInfo.isOfferOverride ? 'このオファー専用の値が設定されています。' : 'まだこのオファー専用の値がないため、商材共通のデフォルト値を表示しています。ここを編集すると、このオファー専用の値として保存されます。'}
+        ${pcInfo.isOfferOverride ? '<button class="btn small" id="ltvPriceCogsResetBtn" style="margin-left:6px;">デフォルトに戻す</button>' : ''}
+      </div>
+    `;
     document.getElementById('ltvPriceCogsTable').innerHTML = `
       <thead><tr><th>項目</th><th class="num">金額(円)</th></tr></thead>
       <tbody>${priceCogsRows.map(r=>`
         <tr><td style="text-align:left;">${r.label}</td><td class="num"><input type="number" class="ltv-pricecogs-input" data-key="${r.key}" value="${r.val||0}" style="width:100px;text-align:right;"></td></tr>
       `).join('')}</tbody>
     `;
+    function ensureOfferPriceCogsEntry(all){
+      if (!all[ltvSelectedCategory]) all[ltvSelectedCategory] = defaultLtvCategorySettings();
+      if (!all[ltvSelectedCategory].offerPriceCogs) all[ltvSelectedCategory].offerPriceCogs = {};
+      if (!all[ltvSelectedCategory].offerPriceCogs[priceCogsOfferKey]){
+        all[ltvSelectedCategory].offerPriceCogs[priceCogsOfferKey] = {
+          frontPriceFirst: pcInfo.frontPriceFirst, frontPriceRepeat: pcInfo.frontPriceRepeat,
+          upsellPriceFirst: pcInfo.upsellPriceFirst, upsellPriceRepeat: pcInfo.upsellPriceRepeat,
+          frontCogsFirst: pcInfo.frontCogsFirst, frontCogsRepeat: pcInfo.frontCogsRepeat,
+          upsellCogsFirst: pcInfo.upsellCogsFirst, upsellCogsRepeat: pcInfo.upsellCogsRepeat
+        };
+      }
+      return all[ltvSelectedCategory].offerPriceCogs[priceCogsOfferKey];
+    }
     document.querySelectorAll('.ltv-pricecogs-input').forEach(inp=>{
       let t=null;
       function commit(){
         const all = loadLtvSettings();
-        if (!all[ltvSelectedCategory]) all[ltvSelectedCategory] = defaultLtvCategorySettings();
-        all[ltvSelectedCategory][inp.dataset.key] = Number(inp.value)||0;
+        const entry = ensureOfferPriceCogsEntry(all);
+        entry[inp.dataset.key] = Number(inp.value)||0;
         saveLtvSettings(all);
         renderLtvTab();
       }
       inp.addEventListener('input', ()=>{ clearTimeout(t); t=setTimeout(commit, 500); });
       inp.addEventListener('change', ()=>{ clearTimeout(t); commit(); });
     });
+    const priceCogsResetBtn = document.getElementById('ltvPriceCogsResetBtn');
+    if (priceCogsResetBtn){
+      priceCogsResetBtn.addEventListener('click', ()=>{
+        const all = loadLtvSettings();
+        if (all[ltvSelectedCategory] && all[ltvSelectedCategory].offerPriceCogs){
+          delete all[ltvSelectedCategory].offerPriceCogs[priceCogsOfferKey];
+          saveLtvSettings(all);
+          renderLtvTab();
+        }
+      });
+    }
 
     // ---- settings: retention rate table (獲得月・オファーごとに異なる値を持てる) ----
     const retentionOfferKey = ltvSelectedOffer || '';
