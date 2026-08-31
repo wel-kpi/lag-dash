@@ -817,7 +817,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.3.0";
+  const APP_VERSION = "4.4.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -907,7 +907,12 @@
   function loadRecords(){
     return loadRecordsRaw().filter(r => !r.deleted);
   }
-  function saveRecordsRaw(arr){ localStorage.setItem(STORAGE_KEY, JSON.stringify(arr)); markLocalMutation(); }
+  function saveRecordsRaw(arr){
+    const json = JSON.stringify(arr);
+    const changed = localStorage.getItem(STORAGE_KEY) !== json;
+    localStorage.setItem(STORAGE_KEY, json);
+    if (changed) markLocalMutation();
+  }
   // Backward-compatible helper: replaces the ACTIVE record set, preserving any
   // existing tombstones (deleted:true entries) that aren't part of the new set.
   function saveRecords(activeArr){
@@ -921,7 +926,12 @@
   function loadHistory(){
     try{ return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); }catch(e){ return []; }
   }
-  function saveHistory(arr){ localStorage.setItem(HISTORY_KEY, JSON.stringify(arr)); markLocalMutation(); }
+  function saveHistory(arr){
+    const json = JSON.stringify(arr);
+    const changed = localStorage.getItem(HISTORY_KEY) !== json;
+    localStorage.setItem(HISTORY_KEY, json);
+    if (changed) markLocalMutation();
+  }
   function loadGroupSettings(){
     try{ return JSON.parse(localStorage.getItem(GROUP_SETTINGS_KEY) || '{}'); }catch(e){ return {}; }
   }
@@ -930,6 +940,7 @@
   // 同期で「新しい方を正しく採用する」ために必要。
   function saveGroupSettings(obj){
     const prev = loadGroupSettings();
+    let changed = false;
     Object.keys(obj).forEach(groupName=>{
       const cur = obj[groupName];
       if (!cur || typeof cur !== 'object') return;
@@ -939,10 +950,15 @@
       if (prevWithoutTs) delete prevWithoutTs.updatedAt;
       if (!prevGroup || JSON.stringify(prevWithoutTs) !== JSON.stringify(curWithoutTs)){
         cur.updatedAt = new Date().toISOString();
+        changed = true;
       }
     });
     localStorage.setItem(GROUP_SETTINGS_KEY, JSON.stringify(obj));
-    markLocalMutation();
+    // 内容が実際に変わった時だけ「未送信の変更あり」を立てる。これをしないと、
+    // 表示のたびに自動補完されるだけの再保存（グループ設定の欠損補完など）でも
+    // 毎回「送信してください」と警告してしまう（タブを切り替えただけで警告が
+    // 出ていた不具合の原因の1つ）。
+    if (changed) markLocalMutation();
   }
   function loadDailyBudgetRaw(){
     try{ return JSON.parse(localStorage.getItem(DAILY_BUDGET_KEY) || '[]'); }catch(e){ return []; }
@@ -951,9 +967,15 @@
     return loadDailyBudgetRaw().filter(b => !b.deleted);
   }
   function saveDailyBudgetRaw(arr){
-    localStorage.setItem(DAILY_BUDGET_KEY, JSON.stringify(arr));
+    const json = JSON.stringify(arr);
+    // タブを切り替えるたびに広告費スプレッドシートを自動で再取込みしており、
+    // 内容が前回と同じでもここに来ていた。内容が実際に変わった時だけ
+    // 「未送信の変更あり」を立てる（そうしないと、送信直後にタブを切り替えた
+    // だけで毎回警告が出てしまう）。
+    const changed = localStorage.getItem(DAILY_BUDGET_KEY) !== json;
+    localStorage.setItem(DAILY_BUDGET_KEY, json);
     localStorage.setItem(BUDGET_LAST_UPDATED_KEY, new Date().toISOString());
-    markLocalMutation();
+    if (changed) markLocalMutation();
   }
   // Backward-compatible helper: replaces the ACTIVE budget entries, preserving any
   // existing tombstones (deleted:true entries) not part of the new set (same
@@ -981,35 +1003,41 @@
     const prev = loadMediaMap();
     const timestamps = loadMediaMapTimestamps();
     const now = new Date().toISOString();
+    let changed = false;
     Object.keys(obj).forEach(code=>{
-      if (prev[code] !== obj[code]) timestamps[code] = now;
+      if (prev[code] !== obj[code]){ timestamps[code] = now; changed = true; }
     });
     localStorage.setItem(MEDIA_MAP_TIMESTAMPS_KEY, JSON.stringify(timestamps));
     localStorage.setItem(MEDIA_MAP_KEY, JSON.stringify(obj));
-    markLocalMutation();
-    markLocalMutation();
+    if (changed) markLocalMutation();
   }
 
   function loadMediaMapHistory(){
     try{ return JSON.parse(localStorage.getItem(MEDIA_MAP_HISTORY_KEY) || '[]'); }catch(e){ return []; }
   }
   function saveMediaMapHistory(arr){
-    localStorage.setItem(MEDIA_MAP_HISTORY_KEY, JSON.stringify(arr.slice(0, 50)));
-    markLocalMutation();
+    const json = JSON.stringify(arr.slice(0, 50));
+    const changed = localStorage.getItem(MEDIA_MAP_HISTORY_KEY) !== json;
+    localStorage.setItem(MEDIA_MAP_HISTORY_KEY, json);
+    if (changed) markLocalMutation();
   }
   function loadDemographics(){
     try{ return JSON.parse(localStorage.getItem(DEMOGRAPHICS_KEY) || '[]'); }catch(e){ return []; }
   }
   function saveDemographics(arr){
-    localStorage.setItem(DEMOGRAPHICS_KEY, JSON.stringify(arr));
-    markLocalMutation();
+    const json = JSON.stringify(arr);
+    const changed = localStorage.getItem(DEMOGRAPHICS_KEY) !== json;
+    localStorage.setItem(DEMOGRAPHICS_KEY, json);
+    if (changed) markLocalMutation();
   }
   function loadDemographicsMeta(){
     try{ return JSON.parse(localStorage.getItem(DEMOGRAPHICS_META_KEY) || 'null'); }catch(e){ return null; }
   }
   function saveDemographicsMeta(meta){
-    localStorage.setItem(DEMOGRAPHICS_META_KEY, JSON.stringify(meta));
-    markLocalMutation();
+    const json = JSON.stringify(meta);
+    const changed = localStorage.getItem(DEMOGRAPHICS_META_KEY) !== json;
+    localStorage.setItem(DEMOGRAPHICS_META_KEY, json);
+    if (changed) markLocalMutation();
   }
   function pushMediaMapHistory(entry){
     const hist = loadMediaMapHistory();
@@ -1052,7 +1080,14 @@
     try{ return Object.assign({ url:'', dateColumnIndex:null, mappings:{}, lastImportedAt:null, twoHeaderRows:false }, JSON.parse(localStorage.getItem(SHEET_CONFIG_KEY) || '{}')); }
     catch(e){ return { url:'', dateColumnIndex:null, mappings:{}, lastImportedAt:null, twoHeaderRows:false }; }
   }
-  function saveSheetConfig(cfg){ localStorage.setItem(SHEET_CONFIG_KEY, JSON.stringify(cfg)); markLocalMutation(); }
+  function saveSheetConfig(cfg){
+    const json = JSON.stringify(cfg);
+    // データ管理タブを開くたびに広告費CSVを自動再取込みしており、その都度
+    // ここに来る。内容が実際に変わった時だけ「未送信の変更あり」を立てる。
+    const changed = localStorage.getItem(SHEET_CONFIG_KEY) !== json;
+    localStorage.setItem(SHEET_CONFIG_KEY, json);
+    if (changed) markLocalMutation();
+  }
 
   // ---------- shared sync (Google Sheet backend via Apps Script) ----------
   // v4: 自動送受信をやめ、「受信」「送信」ボタンを押した時だけ通信する方式に変更。
@@ -2213,6 +2248,7 @@
   // groupSettings と同じ理由で、変更があった商材にだけ自動で updatedAt を付ける
   function saveLtvSettings(obj){
     const prev = loadLtvSettings();
+    let changed = false;
     Object.keys(obj).forEach(category=>{
       const cur = obj[category];
       if (!cur || typeof cur !== 'object') return;
@@ -2222,10 +2258,11 @@
       if (prevWithoutTs) delete prevWithoutTs.updatedAt;
       if (!prevCat || JSON.stringify(prevWithoutTs) !== JSON.stringify(curWithoutTs)){
         cur.updatedAt = new Date().toISOString();
+        changed = true;
       }
     });
     localStorage.setItem(LTV_SETTINGS_KEY, JSON.stringify(obj));
-    markLocalMutation();
+    if (changed) markLocalMutation();
   }
   function getLtvCategorySettings(category){
     const all = loadLtvSettings();
@@ -2269,9 +2306,12 @@
   }
   // groupSettings/ltvSettings と同じ理由で updatedAt を自動付与する
   function saveLtvGlobal(obj){
+    const prevWithoutTs = (()=>{ try{ const p = JSON.parse(localStorage.getItem(LTV_GLOBAL_KEY)||'null'); if (p) delete p.updatedAt; return p; }catch(e){ return null; } })();
+    const curWithoutTs = Object.assign({}, obj); delete curWithoutTs.updatedAt;
+    const changed = JSON.stringify(prevWithoutTs) !== JSON.stringify(curWithoutTs);
     obj.updatedAt = new Date().toISOString();
     localStorage.setItem(LTV_GLOBAL_KEY, JSON.stringify(obj));
-    markLocalMutation();
+    if (changed) markLocalMutation();
   }
 
   function retentionRateFor(retentionObj, cycle){
