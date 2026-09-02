@@ -315,6 +315,7 @@
     <button data-tab="media">📡 媒体別</button>
     <button data-tab="ltv">💹 収益シミュレーション</button>
     <button data-tab="cost">💰 広告費設定</button>
+    <button data-tab="invoices">🧾 請求書</button>
     <button data-tab="manage">📁 データ管理</button>
   </nav>
 
@@ -673,6 +674,41 @@
     </div>
   </section>
 
+  <!-- INVOICES -->
+  <section id="tab-invoices" style="display:none;">
+    <div class="note-box">
+      PDFを選択すると、テキストを自動解析して「取引先・対象年月・金額」を仮入力します。請求書のフォーマットは発行元によって異なるため、<strong>必ず内容を確認してから保存してください</strong>。SUPER STUDIOの請求書は明細を「ma/bi関連」「efo関連」「それ以外」の3つに自動振り分けしますが、これも同様に要確認です。<br>
+      PDFファイル自体はこのツールには保存されません。Google Driveにアップロードしたら、下の「月ごとのDriveリンク」欄にリンクを保存しておくと、みんなが辿れます。
+    </div>
+    <div class="panel">
+      <h2>請求書PDFを取り込む</h2>
+      <div id="invoiceDropzone" class="dropzone-mini">
+        <div class="main">📄 PDFをドラッグ&ドロップ、またはクリックして選択</div>
+        <input type="file" id="invoiceFileInput" accept="application/pdf">
+      </div>
+      <div class="controls" style="margin-top:8px;">
+        <button class="btn" id="invoiceManualBtn">PDFなしで手動入力</button>
+        <span class="n" id="invoiceParseStatus"></span>
+      </div>
+      <div id="invoiceDraftArea"></div>
+    </div>
+    <div class="panel">
+      <h2>月ごとのGoogle Driveリンク</h2>
+      <div class="inline-form">
+        <label>年月を追加 <input type="month" id="invoiceDriveMonthAdd"></label>
+        <button class="btn small" id="invoiceDriveMonthAddBtn">追加</button>
+      </div>
+      <div class="table-wrap" style="margin-top:10px;"><table class="data" id="invoiceDriveLinkTable"></table></div>
+    </div>
+    <div class="panel">
+      <h2>登録済み請求書<span class="n" id="invoiceCount"></span></h2>
+      <div class="controls">
+        <label>年月で絞り込み <select id="invoiceMonthFilter"><option value="">すべて</option></select></label>
+      </div>
+      <div id="invoiceListArea" style="margin-top:10px;"></div>
+    </div>
+  </section>
+
   <!-- MANAGE -->
   <section id="tab-manage" style="display:none;">
     <div class="panel">
@@ -813,11 +849,18 @@
   </footer>
 </div>
 
+<!-- 請求書PDFのテキスト抽出用（ブラウザ内のみで完結、外部送信なし） -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>
+  if (window.pdfjsLib) {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  }
+</script>
 <script>
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.5.0";
+  const APP_VERSION = "4.6.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -846,6 +889,8 @@
   const DAILY_BUDGET_KEY = 'lagnet_daily_budget_v1';
   const BUDGET_LAST_UPDATED_KEY = 'lagnet_budget_last_updated_v1';
   const SHEET_CONFIG_KEY = 'lagnet_sheet_config_v1';
+  const INVOICES_KEY = 'lagnet_invoices_v1';
+  const INVOICE_DRIVE_LINKS_KEY = 'lagnet_invoice_drive_links_v1';
   const MEDIA_MAP_KEY = 'lagnet_media_map_v1';
   const MEDIA_MAP_TIMESTAMPS_KEY = 'lagnet_media_map_timestamps_v1';
   const MEDIA_MAP_HISTORY_KEY = 'lagnet_media_map_history_v1';
@@ -1155,6 +1200,8 @@
     ltvSettings: LTV_SETTINGS_KEY,
     ltvGlobal: LTV_GLOBAL_KEY,
     sheetConfig: SHEET_CONFIG_KEY,
+    invoices: INVOICES_KEY,
+    invoiceDriveLinks: INVOICE_DRIVE_LINKS_KEY,
     // ダッシュボードの「着地想定」で使う手動調整・グループ別の手入力件数。
     // これが同期対象から漏れていたため、着地想定の数字だけ端末ごとに
     // バラバラになる不具合があった（定数の宣言順の都合上、キー名は
@@ -5535,6 +5582,360 @@
     reader.readAsArrayBuffer(file);
   }
 
+  // ---------- invoices tab ----------
+  // 請求書PDF本体は保存しない（同期データが肥大化するのを避けるため）。
+  // 保存するのは「取引先・対象年月・金額」など、テキストから抽出した情報だけ。
+  // PDFの実物はGoogle Driveに手動でアップロードしてもらい、月ごとのフォルダ
+  // リンクだけをここに保持する。
+  function loadInvoices(){
+    try{ return JSON.parse(localStorage.getItem(INVOICES_KEY) || '[]'); }catch(e){ return []; }
+  }
+  function saveInvoices(arr){
+    const json = JSON.stringify(arr);
+    const changed = localStorage.getItem(INVOICES_KEY) !== json;
+    localStorage.setItem(INVOICES_KEY, json);
+    if (changed) markLocalMutation();
+  }
+  function loadInvoiceDriveLinks(){
+    try{ return JSON.parse(localStorage.getItem(INVOICE_DRIVE_LINKS_KEY) || '{}'); }catch(e){ return {}; }
+  }
+  function saveInvoiceDriveLinks(obj){
+    const json = JSON.stringify(obj);
+    const changed = localStorage.getItem(INVOICE_DRIVE_LINKS_KEY) !== json;
+    localStorage.setItem(INVOICE_DRIVE_LINKS_KEY, json);
+    if (changed) markLocalMutation();
+  }
+  function invoiceTotal(inv){
+    return inv.isSuperStudio ? (Number(inv.maBi)||0)+(Number(inv.efo)||0)+(Number(inv.other)||0) : (Number(inv.amount)||0);
+  }
+
+  // ---- PDFテキスト抽出（pdf.js。ブラウザ内で完結し、外部へは一切送信しない） ----
+  // ページごとに文字の描画位置（Y座標）でまとめて「行」を復元する。厳密な表構造
+  // 復元ではないが、多くの請求書PDF（1行1項目のテキストベースのもの）であれば
+  // これで十分実用的に読み取れる。
+  async function extractPdfText(arrayBuffer){
+    if (!window.pdfjsLib) throw new Error('PDF読み取りライブラリの読み込みに失敗しました（オフラインの場合は読み込めません）');
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    let fullText = '';
+    const lines = [];
+    for (let p = 1; p <= pdf.numPages; p++){
+      const page = await pdf.getPage(p);
+      const content = await page.getTextContent();
+      const rowMap = {};
+      content.items.forEach(item=>{
+        const y = Math.round(item.transform[5]);
+        const key = p + '_' + y;
+        if (!rowMap[key]) rowMap[key] = { y, parts: [] };
+        rowMap[key].parts.push(item.str);
+      });
+      Object.values(rowMap).sort((a,b)=> b.y - a.y).forEach(row=>{
+        const text = row.parts.join('');
+        if (text.trim()) lines.push({ page: p, text });
+        fullText += text + '\n';
+      });
+    }
+    return { text: fullText, lines };
+  }
+
+  function zenkakuToHankaku(s){
+    return String(s).replace(/[０-９，．￥]/g, c => ({'０':'0','１':'1','２':'2','３':'3','４':'4','５':'5','６':'6','７':'7','８':'8','９':'9','，':',','．':'.','￥':'¥'}[c] || c));
+  }
+  function parseYenAmount(s){
+    const cleaned = zenkakuToHankaku(s).replace(/[¥,\s円]/g, '');
+    const n = Number(cleaned);
+    return isNaN(n) || n === 0 ? null : n;
+  }
+  // 「ご請求金額」等のラベル直後の金額を優先し、無ければ本文中で一番大きい
+  // ¥金額を合計額とみなす（多くの請求書で合計が最大の金額になるため）。
+  function guessInvoiceAmount(text){
+    const norm = zenkakuToHankaku(text);
+    const labels = ['ご請求金額','御請求金額','請求金額合計','ご請求額','お支払い金額','合計金額','請求金額'];
+    for (const label of labels){
+      const re = new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g,'\\$&') + '[^0-9¥]{0,12}(¥?[0-9,]{2,})');
+      const m = norm.match(re);
+      if (m){ const v = parseYenAmount(m[1]); if (v) return v; }
+    }
+    const all = [...norm.matchAll(/¥\s?([0-9,]{3,})/g)].map(m=>parseYenAmount(m[1])).filter(Boolean);
+    if (all.length) return Math.max(...all);
+    return 0;
+  }
+  function guessInvoiceMonth(text){
+    const norm = zenkakuToHankaku(text);
+    const m = norm.match(/(20\d{2})[年\/\-](\d{1,2})月?度?分?/);
+    if (m) return `${m[1]}-${String(m[2]).padStart(2,'0')}`;
+    return '';
+  }
+  const KNOWN_INVOICE_VENDORS = ['SUPER STUDIO','スーパースタジオ','LETGOS','サークア','UNIQUEST','インフルエンサー','Google','Meta','TikTok','LINE','Yahoo'];
+  // まず既知の取引先名リストと一致するか調べ、無ければ「◯◯株式会社」のような
+  // パターンを本文から探す（宛先＝自社側を指す「〜御中」の行は除外する）。
+  function guessInvoiceVendor(text){
+    const upper = text.toUpperCase();
+    for (const v of KNOWN_INVOICE_VENDORS){
+      if (upper.includes(v.toUpperCase())) return v;
+    }
+    const lines = text.split('\n');
+    for (const line of lines){
+      if (line.includes('御中')) continue;
+      const m = line.match(/([ァ-ヶー一-龠A-Za-zＡ-Ｚａ-ｚ0-9・]{2,30}(?:株式会社|合同会社))/);
+      if (m) return m[1];
+    }
+    return '';
+  }
+  function isSuperStudioVendor(vendor, text){
+    const t = (String(vendor) + ' ' + String(text)).toUpperCase();
+    return t.includes('SUPER STUDIO') || t.includes('スーパースタジオ');
+  }
+  // SUPER STUDIOの請求書は複数のオプション明細が並ぶため、行ごとに末尾の金額を
+  // 拾い、その行の文言に「ma」「bi」「efo」が含まれるかで3種類に振り分ける。
+  // 「合計」「小計」などの集計行は明細ではないので除外する。
+  function categorizeSuperStudioLines(lines){
+    let maBi = 0, efo = 0, other = 0;
+    (lines || []).forEach(({ text })=>{
+      if (/合計|小計|消費税|残高|割引|ページ|請求/.test(text)) return;
+      const norm = zenkakuToHankaku(text);
+      const m = norm.match(/(¥?[0-9,]{3,})\s*円?\s*$/);
+      if (!m) return;
+      const amt = parseYenAmount(m[1]);
+      if (!amt) return;
+      if (/\bma\b|\bbi\b|ｍａ|ｂｉ/i.test(text)) maBi += amt;
+      else if (/efo|ｅｆｏ/i.test(text)) efo += amt;
+      else other += amt;
+    });
+    return { maBi, efo, other };
+  }
+
+  let invoiceDraft = null;
+  let invoiceMonthFilter = '';
+
+  async function handleInvoicePdfFile(file){
+    const statusEl = document.getElementById('invoiceParseStatus');
+    if (statusEl) statusEl.textContent = '解析中…';
+    try{
+      const buf = await file.arrayBuffer();
+      const { text, lines } = await extractPdfText(buf);
+      const vendor = guessInvoiceVendor(text) || file.name.replace(/\.pdf$/i, '');
+      const month = guessInvoiceMonth(text);
+      const isSS = isSuperStudioVendor(vendor, text);
+      let amount = 0, maBi = 0, efo = 0, other = 0;
+      if (isSS){
+        const cats = categorizeSuperStudioLines(lines);
+        maBi = cats.maBi; efo = cats.efo; other = cats.other;
+      } else {
+        amount = guessInvoiceAmount(text);
+      }
+      invoiceDraft = { editId: null, fileName: file.name, vendor, month, isSuperStudio: isSS, amount, maBi, efo, other, rawTextPreview: text.slice(0, 3000) };
+    }catch(err){
+      invoiceDraft = { editId: null, fileName: file.name, vendor: file.name.replace(/\.pdf$/i, ''), month: '', isSuperStudio: false, amount: 0, maBi: 0, efo: 0, other: 0, rawTextPreview: '' };
+      alert('PDFの自動解析に失敗しました。内容を手動で入力してください。（' + ((err && err.message) || err) + '）');
+    }
+    if (statusEl) statusEl.textContent = '';
+    renderInvoiceDraftForm();
+  }
+
+  function renderInvoiceDraftForm(){
+    const area = document.getElementById('invoiceDraftArea');
+    if (!area) return;
+    if (!invoiceDraft){ area.innerHTML = ''; return; }
+    const d = invoiceDraft;
+    area.innerHTML = `
+      <div class="panel" style="border-color:var(--accent);border-width:2px;margin-top:12px;">
+        <h3 style="margin-top:0;">内容を確認して登録${d.fileName ? `<span class="n">（${escapeHtml(d.fileName)}）</span>` : ''}</h3>
+        <div class="inline-form">
+          <label>取引先 <input type="text" id="draftVendor" value="${escapeHtml(d.vendor)}" style="width:220px;"></label>
+          <label>対象年月 <input type="month" id="draftMonth" value="${escapeHtml(d.month)}"></label>
+        </div>
+        <label style="display:flex;align-items:center;gap:6px;margin-top:10px;">
+          <input type="checkbox" id="draftIsSuperStudio" ${d.isSuperStudio ? 'checked' : ''}>
+          SUPER STUDIOの請求書（ma/bi・efo・それ以外の内訳で入力する）
+        </label>
+        <div id="draftAmountArea" style="margin-top:10px;"></div>
+        ${d.rawTextPreview ? `<details style="margin-top:10px;"><summary style="cursor:pointer;font-size:11.5px;color:var(--text-dim);">抽出したテキスト（確認用）</summary><pre style="white-space:pre-wrap;font-size:11px;color:var(--text-dim);max-height:200px;overflow:auto;background:var(--bg-panel-2);padding:8px;border-radius:6px;margin-top:6px;">${escapeHtml(d.rawTextPreview)}</pre></details>` : ''}
+        <div class="controls" style="margin-top:12px;">
+          <button class="btn" id="draftCancelBtn">キャンセル</button>
+          <button class="btn primary" id="draftSaveBtn">登録する</button>
+        </div>
+      </div>
+    `;
+    renderDraftAmountArea();
+    document.getElementById('draftIsSuperStudio').addEventListener('change', (e)=>{
+      invoiceDraft.isSuperStudio = e.target.checked;
+      renderDraftAmountArea();
+    });
+    document.getElementById('draftCancelBtn').addEventListener('click', ()=>{
+      invoiceDraft = null;
+      renderInvoiceDraftForm();
+    });
+    document.getElementById('draftSaveBtn').addEventListener('click', saveDraftInvoice);
+  }
+
+  function renderDraftAmountArea(){
+    const el = document.getElementById('draftAmountArea');
+    if (!el || !invoiceDraft) return;
+    const d = invoiceDraft;
+    if (d.isSuperStudio){
+      el.innerHTML = `
+        <div class="grid-kpi" style="grid-template-columns:repeat(3,1fr);">
+          <label>「ma」「bi」関連(円) <input type="number" id="draftMaBi" value="${Number(d.maBi)||0}" style="width:100%;text-align:right;"></label>
+          <label>「efo」関連(円) <input type="number" id="draftEfo" value="${Number(d.efo)||0}" style="width:100%;text-align:right;"></label>
+          <label>それ以外(円) <input type="number" id="draftOther" value="${Number(d.other)||0}" style="width:100%;text-align:right;"></label>
+        </div>
+        <p class="n" style="margin-top:6px;">合計: <span id="draftSsTotal">${fmtYen((Number(d.maBi)||0)+(Number(d.efo)||0)+(Number(d.other)||0))}</span></p>
+      `;
+      ['draftMaBi','draftEfo','draftOther'].forEach(id=>{
+        document.getElementById(id).addEventListener('input', ()=>{
+          const maBi = Number(document.getElementById('draftMaBi').value)||0;
+          const efo = Number(document.getElementById('draftEfo').value)||0;
+          const other = Number(document.getElementById('draftOther').value)||0;
+          document.getElementById('draftSsTotal').textContent = fmtYen(maBi+efo+other);
+        });
+      });
+    } else {
+      el.innerHTML = `<label>金額（円） <input type="number" id="draftAmount" value="${Number(d.amount)||0}" style="width:160px;text-align:right;"></label>`;
+    }
+  }
+
+  function saveDraftInvoice(){
+    const d = invoiceDraft;
+    const vendor = document.getElementById('draftVendor').value.trim();
+    const month = document.getElementById('draftMonth').value;
+    const isSS = document.getElementById('draftIsSuperStudio').checked;
+    if (!vendor){ alert('取引先を入力してください。'); return; }
+    if (!month){ alert('対象年月を入力してください。'); return; }
+    let amount = 0, maBi = 0, efo = 0, other = 0;
+    if (isSS){
+      maBi = Number(document.getElementById('draftMaBi').value) || 0;
+      efo = Number(document.getElementById('draftEfo').value) || 0;
+      other = Number(document.getElementById('draftOther').value) || 0;
+    } else {
+      amount = Number(document.getElementById('draftAmount').value) || 0;
+    }
+    const invoices = loadInvoices();
+    const record = {
+      id: d.editId || (Date.now() + '-' + Math.random().toString(36).slice(2, 8)),
+      vendor, month, isSuperStudio: isSS, amount, maBi, efo, other,
+      fileName: d.fileName || '', updatedAt: new Date().toISOString()
+    };
+    const idx = invoices.findIndex(x=>x.id === record.id);
+    if (idx >= 0) invoices[idx] = record; else invoices.push(record);
+    saveInvoices(invoices);
+    invoiceDraft = null;
+    renderInvoicesTab();
+  }
+
+  function copyToClipboard(text){
+    const str = String(text);
+    if (navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(str).catch(()=>fallbackCopyToClipboard(str));
+    } else {
+      fallbackCopyToClipboard(str);
+    }
+  }
+  function fallbackCopyToClipboard(str){
+    const ta = document.createElement('textarea');
+    ta.value = str;
+    ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try{ document.execCommand('copy'); }catch(e){}
+    document.body.removeChild(ta);
+  }
+
+  function invRowHtml(inv){
+    const total = invoiceTotal(inv);
+    const copyBtn = (val, label) => `<button type="button" class="btn small js-copy-amt" data-value="${Math.round(val)}" title="${escapeHtml(label)}をコピー">📋</button>`;
+    const amountCell = `${fmtYen(total)} ${copyBtn(total, '金額')}`;
+    const breakdownCell = inv.isSuperStudio
+      ? `<div style="font-size:11px;line-height:2;">ma/bi: ${fmtYen(inv.maBi)} ${copyBtn(inv.maBi,'ma/bi')}<br>efo: ${fmtYen(inv.efo)} ${copyBtn(inv.efo,'efo')}<br>それ以外: ${fmtYen(inv.other)} ${copyBtn(inv.other,'それ以外')}</div>`
+      : '<span class="n">—</span>';
+    return `<tr data-id="${inv.id}">
+      <td style="text-align:left;">${escapeHtml(inv.vendor)}${inv.fileName ? `<div class="n" style="font-size:10.5px;">${escapeHtml(inv.fileName)}</div>` : ''}</td>
+      <td class="num">${amountCell}</td>
+      <td style="text-align:left;">${breakdownCell}</td>
+      <td class="nowrap"><button class="btn small js-edit-inv" data-id="${inv.id}">編集</button> <button class="btn small danger js-del-inv" data-id="${inv.id}">削除</button></td>
+    </tr>`;
+  }
+
+  function renderInvoiceList(){
+    const invoices = loadInvoices();
+    const months = uniqueSorted(invoices.map(i=>i.month)).reverse();
+    populateSelect(document.getElementById('invoiceMonthFilter'), months, invoiceMonthFilter);
+    document.getElementById('invoiceCount').textContent = ` (${invoices.length}件)`;
+    const filtered = invoiceMonthFilter ? invoices.filter(i=>i.month === invoiceMonthFilter) : invoices;
+    const groups = {};
+    filtered.forEach(inv=>{ (groups[inv.month] = groups[inv.month] || []).push(inv); });
+    const links = loadInvoiceDriveLinks();
+    const monthKeys = Object.keys(groups).sort().reverse();
+    document.getElementById('invoiceListArea').innerHTML = monthKeys.length ? monthKeys.map(m=>{
+      const items = groups[m].slice().sort((a,b)=>(a.vendor||'').localeCompare(b.vendor||'','ja'));
+      const total = items.reduce((s,i)=>s+invoiceTotal(i), 0);
+      const link = links[m];
+      return `<details open style="margin-bottom:14px;">
+        <summary style="cursor:pointer;padding:8px 0;"><b>${escapeHtml(m)}</b> <span class="n">${items.length}件 / 合計 ${fmtYen(total)}</span>${link ? ` <a href="${escapeHtml(link)}" target="_blank" rel="noopener" class="n">📁 Driveフォルダ</a>` : ''}</summary>
+        <div class="table-wrap">
+          <table class="data">
+            <thead><tr><th>取引先</th><th class="num">金額</th><th>内訳（SUPER STUDIO）</th><th>操作</th></tr></thead>
+            <tbody>${items.map(invRowHtml).join('')}</tbody>
+          </table>
+        </div>
+      </details>`;
+    }).join('') : '<div class="empty-note">まだ請求書が登録されていません</div>';
+    document.querySelectorAll('.js-copy-amt').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        copyToClipboard(btn.dataset.value);
+        const orig = btn.textContent;
+        btn.textContent = '✓';
+        setTimeout(()=>{ btn.textContent = orig; }, 1200);
+      });
+    });
+    document.querySelectorAll('.js-edit-inv').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const inv = loadInvoices().find(x=>x.id === btn.dataset.id);
+        if (!inv) return;
+        invoiceDraft = { editId: inv.id, fileName: inv.fileName, vendor: inv.vendor, month: inv.month, isSuperStudio: inv.isSuperStudio, amount: inv.amount, maBi: inv.maBi, efo: inv.efo, other: inv.other, rawTextPreview: '' };
+        renderInvoiceDraftForm();
+        document.getElementById('invoiceDraftArea').scrollIntoView({ behavior: 'smooth', block: 'center' });
+      });
+    });
+    document.querySelectorAll('.js-del-inv').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        if (!confirm('この請求書を削除しますか？')) return;
+        saveInvoices(loadInvoices().filter(x=>x.id !== btn.dataset.id));
+        renderInvoicesTab();
+      });
+    });
+  }
+
+  function renderInvoiceDriveLinkTable(){
+    const links = loadInvoiceDriveLinks();
+    const invoiceMonths = uniqueSorted(loadInvoices().map(i=>i.month));
+    const allMonths = uniqueSorted([...invoiceMonths, ...Object.keys(links)]).reverse();
+    document.getElementById('invoiceDriveLinkTable').innerHTML = `
+      <thead><tr><th>年月</th><th>Driveフォルダリンク</th><th></th></tr></thead>
+      <tbody>${allMonths.length ? allMonths.map(m=>`<tr>
+        <td style="text-align:left;">${escapeHtml(m)}</td>
+        <td><input type="text" class="js-drive-link" data-month="${escapeHtml(m)}" value="${escapeHtml(links[m]||'')}" placeholder="https://drive.google.com/..." style="width:100%;"></td>
+        <td class="nowrap">${links[m] ? `<a href="${escapeHtml(links[m])}" target="_blank" rel="noopener" class="btn small">開く</a>` : ''}</td>
+      </tr>`).join('') : emptyRow(3)}</tbody>
+    `;
+    document.querySelectorAll('.js-drive-link').forEach(inp=>{
+      let t = null;
+      function commit(){
+        const cur = loadInvoiceDriveLinks();
+        cur[inp.dataset.month] = inp.value.trim();
+        saveInvoiceDriveLinks(cur);
+        renderInvoiceDriveLinkTable();
+      }
+      inp.addEventListener('input', ()=>{ clearTimeout(t); t = setTimeout(commit, 600); });
+      inp.addEventListener('change', ()=>{ clearTimeout(t); commit(); });
+    });
+  }
+
+  function renderInvoicesTab(){
+    renderInvoiceDriveLinkTable();
+    renderInvoiceList();
+    renderInvoiceDraftForm();
+  }
+
   // ---------- wiring ----------
   function renderAll(){
     renderDashboard();
@@ -5545,6 +5946,7 @@
     renderLtvTab();
     renderReport();
     renderCostTab();
+    renderInvoicesTab();
     renderHistory();
     renderDeleteGroupSelect();
     renderMediaMapTable();
@@ -5555,7 +5957,7 @@
     btn.addEventListener('click', ()=>{
       document.querySelectorAll('nav.tabs button').forEach(b=>b.classList.remove('active'));
       btn.classList.add('active');
-      ['dashboard','summary','trend','report','demographics','media','ltv','cost','manage'].forEach(t=>{
+      ['dashboard','summary','trend','report','demographics','media','ltv','cost','invoices','manage'].forEach(t=>{
         document.getElementById('tab-'+t).style.display = (t===btn.dataset.tab) ? '' : 'none';
       });
       renderAll();
@@ -5699,6 +6101,39 @@
   ltvRetentionDropzone.addEventListener('drop', (e)=>{
     const files = e.dataTransfer.files;
     if (files.length) handleRetentionCSVFile(files[0]);
+  });
+
+  const invoiceDropzone = document.getElementById('invoiceDropzone');
+  const invoiceFileInput = document.getElementById('invoiceFileInput');
+  invoiceDropzone.addEventListener('click', ()=>invoiceFileInput.click());
+  invoiceFileInput.addEventListener('change', (e)=>{
+    if (e.target.files.length) handleInvoicePdfFile(e.target.files[0]);
+  });
+  ['dragenter','dragover'].forEach(evt=>{
+    invoiceDropzone.addEventListener(evt, (e)=>{ e.preventDefault(); invoiceDropzone.classList.add('drag'); });
+  });
+  ['dragleave','drop'].forEach(evt=>{
+    invoiceDropzone.addEventListener(evt, (e)=>{ e.preventDefault(); invoiceDropzone.classList.remove('drag'); });
+  });
+  invoiceDropzone.addEventListener('drop', (e)=>{
+    const files = e.dataTransfer.files;
+    if (files.length) handleInvoicePdfFile(files[0]);
+  });
+  document.getElementById('invoiceManualBtn').addEventListener('click', ()=>{
+    invoiceDraft = { editId: null, fileName: '', vendor: '', month: '', isSuperStudio: false, amount: 0, maBi: 0, efo: 0, other: 0, rawTextPreview: '' };
+    renderInvoiceDraftForm();
+  });
+  document.getElementById('invoiceMonthFilter').addEventListener('change', (e)=>{
+    invoiceMonthFilter = e.target.value;
+    renderInvoiceList();
+  });
+  document.getElementById('invoiceDriveMonthAddBtn').addEventListener('click', ()=>{
+    const m = document.getElementById('invoiceDriveMonthAdd').value;
+    if (!m){ alert('年月を選択してください。'); return; }
+    const cur = loadInvoiceDriveLinks();
+    if (!(m in cur)) cur[m] = '';
+    saveInvoiceDriveLinks(cur);
+    renderInvoiceDriveLinkTable();
   });
 
   document.getElementById('clearAllBtn').addEventListener('click', ()=>{
