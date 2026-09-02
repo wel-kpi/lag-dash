@@ -817,7 +817,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.4.0";
+  const APP_VERSION = "4.5.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -1081,11 +1081,19 @@
     catch(e){ return { url:'', dateColumnIndex:null, mappings:{}, lastImportedAt:null, twoHeaderRows:false }; }
   }
   function saveSheetConfig(cfg){
-    const json = JSON.stringify(cfg);
-    // データ管理タブを開くたびに広告費CSVを自動再取込みしており、その都度
-    // ここに来る。内容が実際に変わった時だけ「未送信の変更あり」を立てる。
-    const changed = localStorage.getItem(SHEET_CONFIG_KEY) !== json;
-    localStorage.setItem(SHEET_CONFIG_KEY, json);
+    // lastImportedAt は「最後に自動取込みした時刻」を表示するためだけの
+    // 内部的なタイムスタンプで、データ管理タブを開くたびに再取込みが走る
+    // 度に必ず更新される。これを比較対象に含めると、CSVの中身が1文字も
+    // 変わっていなくても毎回「差分あり」と判定されてしまう（送信直後に
+    // タブを開いただけで警告が出ていた不具合の直接の原因はこれだった）。
+    // updatedAt を除外する他の保存関数と同じ考え方で、ここも除外して比較する。
+    const prevRaw = localStorage.getItem(SHEET_CONFIG_KEY);
+    let prevWithoutTs = null;
+    try{ prevWithoutTs = JSON.parse(prevRaw || 'null'); }catch(e){}
+    if (prevWithoutTs) delete prevWithoutTs.lastImportedAt;
+    const curWithoutTs = Object.assign({}, cfg); delete curWithoutTs.lastImportedAt;
+    const changed = JSON.stringify(prevWithoutTs) !== JSON.stringify(curWithoutTs);
+    localStorage.setItem(SHEET_CONFIG_KEY, JSON.stringify(cfg));
     if (changed) markLocalMutation();
   }
 
@@ -1702,7 +1710,7 @@
   // グループの追加対象を、その商材・オファーに属するグループだけに絞り込む。
   // これを渡さない場合（商材・オファーで絞り込んでいない画面）は今まで通り、
   // 予算運用の全グループが対象になる。
-  function costForRecordsInWindow(records, from, to, categoryFilter, offerFilter){
+  function costForRecordsInWindow(records, from, to, categoryFilter, offerFilter, agencyFilter){
     const byGroup = {};
     records.forEach(r=>{
       if (!r.group) return;
@@ -1720,11 +1728,13 @@
       if (byGroup[b.group]) return; // 実際に受注があるグループは対象済みなのでスキップ
       const s = settings[b.group];
       if (!s || s.type !== 'budget') return;
-      // 商材・オファーで絞り込んでいる場合は、そのグループが本当にその条件に
-      // 属するかを確認してから加える（そうしないと無関係な商材・オファーの
-      // 広告費まで巻き込んでしまう）
+      // 商材・オファー・代理店で絞り込んでいる場合は、そのグループが本当にその
+      // 条件に属するかを確認してから加える（そうしないと無関係な商材・オファー・
+      // 代理店の広告費まで巻き込んでしまう＝代理店で絞り込むと広告費だけ異常に
+      // 大きくなる不具合の原因はこれだった）。
       if (categoryFilter && extractCategory(b.group) !== categoryFilter) return;
       if (offerFilter && resolveOffer(categoryFilter, b.group) !== offerFilter) return;
+      if (agencyFilter && s.agency !== agencyFilter) return;
       byGroup[b.group] = [];
     });
     let total = 0;
@@ -1736,7 +1746,7 @@
 
   // 上と同じロジックで、広告費の合計だけでなく「どのグループがいくら」の内訳も
   // 返す版。想定外に高額なCPAが出た時に、原因のグループを特定するのに使う。
-  function costBreakdownForRecordsInWindow(records, from, to, categoryFilter, offerFilter){
+  function costBreakdownForRecordsInWindow(records, from, to, categoryFilter, offerFilter, agencyFilter){
     const byGroup = {};
     records.forEach(r=>{
       if (!r.group) return;
@@ -1753,6 +1763,7 @@
       if (!s || s.type !== 'budget') return;
       if (categoryFilter && extractCategory(b.group) !== categoryFilter) return;
       if (offerFilter && resolveOffer(categoryFilter, b.group) !== offerFilter) return;
+      if (agencyFilter && s.agency !== agencyFilter) return;
       byGroup[b.group] = [];
     });
     const breakdown = Object.entries(byGroup).map(([g, recs])=>({
@@ -4277,7 +4288,7 @@
       const cancelRate = pct(g.cancel, g.total);
       const upsellRate = pct(g.upsell, g.total);
       const bounds = granularity === 'month' ? monthBounds(k) : { start: k, end: k };
-      const cost = costForRecordsInWindow(g.records, bounds.start, bounds.end, trendCategory||null);
+      const cost = costForRecordsInWindow(g.records, bounds.start, bounds.end, trendCategory||null, null, agency||null);
       const cpa = cost>0 && g.total>0 ? cost/g.total : NaN;
       grandTotal += g.total; grandCancel += g.cancel; grandUpsell += g.upsell; grandCost += cost;
       return `<tr>
