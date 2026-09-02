@@ -131,6 +131,9 @@
   .dropzone-mini.drag{border-color:var(--accent);background:var(--accent-soft);}
   .dropzone-mini .main{font-size:13px;color:var(--text);}
   .dropzone-mini input[type=file]{display:none;}
+  #invoiceDropzone{min-height:110px;display:flex;align-items:center;justify-content:center;padding:36px 14px;}
+  #invoiceDropzone .main{font-size:14.5px;}
+  #draftMonth, #invoiceDriveMonthAdd, #invoiceMonthFilter{font-size:15px;padding:8px 10px;min-height:40px;cursor:pointer;}
 
   table{width:100%;border-collapse:collapse;font-size:12.5px;}
   table.data th, table.data td{padding:8px 10px;border-bottom:1px solid var(--border);text-align:right;white-space:nowrap;}
@@ -701,7 +704,10 @@
       <div class="table-wrap" style="margin-top:10px;"><table class="data" id="invoiceDriveLinkTable"></table></div>
     </div>
     <div class="panel">
-      <h2>登録済み請求書<span class="n" id="invoiceCount"></span></h2>
+      <h2>読み取り履歴<span class="n" id="invoiceCount"></span></h2>
+      <div class="note-box">
+        ここに保存されているのは、PDFから抽出した<strong>会社名・年月・金額などのテキスト情報のみ</strong>です（他の端末とも共有されます）。PDFファイル自体はどの端末にも保存されないため、<strong>請求書の実物は上のGoogle Driveリンクから確認してください</strong>。
+      </div>
       <div class="controls">
         <label>年月で絞り込み <select id="invoiceMonthFilter"><option value="">すべて</option></select></label>
       </div>
@@ -860,7 +866,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.6.0";
+  const APP_VERSION = "4.6.1";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -5775,9 +5781,9 @@
     if (d.isSuperStudio){
       el.innerHTML = `
         <div class="grid-kpi" style="grid-template-columns:repeat(3,1fr);">
-          <label>「ma」「bi」関連(円) <input type="number" id="draftMaBi" value="${Number(d.maBi)||0}" style="width:100%;text-align:right;"></label>
-          <label>「efo」関連(円) <input type="number" id="draftEfo" value="${Number(d.efo)||0}" style="width:100%;text-align:right;"></label>
-          <label>それ以外(円) <input type="number" id="draftOther" value="${Number(d.other)||0}" style="width:100%;text-align:right;"></label>
+          <label>「ma」「bi」関連(円) <input type="number" id="draftMaBi" value="${Number(d.maBi)||0}" style="width:100%;text-align:right;"><div class="n" id="draftMaBiFmt" style="margin-top:2px;">${fmtYen(d.maBi)}</div></label>
+          <label>「efo」関連(円) <input type="number" id="draftEfo" value="${Number(d.efo)||0}" style="width:100%;text-align:right;"><div class="n" id="draftEfoFmt" style="margin-top:2px;">${fmtYen(d.efo)}</div></label>
+          <label>それ以外(円) <input type="number" id="draftOther" value="${Number(d.other)||0}" style="width:100%;text-align:right;"><div class="n" id="draftOtherFmt" style="margin-top:2px;">${fmtYen(d.other)}</div></label>
         </div>
         <p class="n" style="margin-top:6px;">合計: <span id="draftSsTotal">${fmtYen((Number(d.maBi)||0)+(Number(d.efo)||0)+(Number(d.other)||0))}</span></p>
       `;
@@ -5786,11 +5792,17 @@
           const maBi = Number(document.getElementById('draftMaBi').value)||0;
           const efo = Number(document.getElementById('draftEfo').value)||0;
           const other = Number(document.getElementById('draftOther').value)||0;
+          document.getElementById('draftMaBiFmt').textContent = fmtYen(maBi);
+          document.getElementById('draftEfoFmt').textContent = fmtYen(efo);
+          document.getElementById('draftOtherFmt').textContent = fmtYen(other);
           document.getElementById('draftSsTotal').textContent = fmtYen(maBi+efo+other);
         });
       });
     } else {
-      el.innerHTML = `<label>金額（円） <input type="number" id="draftAmount" value="${Number(d.amount)||0}" style="width:160px;text-align:right;"></label>`;
+      el.innerHTML = `<label>金額（円） <input type="number" id="draftAmount" value="${Number(d.amount)||0}" style="width:160px;text-align:right;"><div class="n" id="draftAmountFmt" style="margin-top:2px;">${fmtYen(d.amount)}</div></label>`;
+      document.getElementById('draftAmount').addEventListener('input', ()=>{
+        document.getElementById('draftAmountFmt').textContent = fmtYen(Number(document.getElementById('draftAmount').value)||0);
+      });
     }
   }
 
