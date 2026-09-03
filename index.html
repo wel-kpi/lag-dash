@@ -903,7 +903,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.15.0";
+  const APP_VERSION = "4.16.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -5694,6 +5694,10 @@
     const unit = row.mode === 'budget' ? (Number(row.avgCpa)||0) : (Number(row.unitCost)||0);
     return (Number(row.capCount)||0) * unit;
   }
+  // 概算広告費（3ヶ月按分）＝ 概算広告費を単純に3で割った月換算値。
+  function budgetRowCostAmortized3(row){
+    return budgetRowCost(row) / 3;
+  }
 
   let bpSelectedMonth = null; // null = 初回表示時に当月を使う
 
@@ -5755,11 +5759,13 @@
     const rows = loadBudgetPlanRows(bpSelectedMonth);
     const totalCapCount = rows.reduce((s, r) => s + (Number(r.capCount) || 0), 0);
     const totalCost = rows.reduce((s, r) => s + budgetRowCost(r), 0);
+    const totalCostAmortized3 = totalCost / 3;
     const avgCpa = totalCapCount > 0 ? totalCost / totalCapCount : NaN;
 
     document.getElementById('bpSummaryKpis').innerHTML = `
       <div class="kpi"><div class="label">当月の上限件数（合計）</div><div class="value">${fmtNum(totalCapCount)}</div></div>
       <div class="kpi"><div class="label">概算広告費（合計）</div><div class="value accent">${fmtYen(totalCost)}</div></div>
+      <div class="kpi"><div class="label">概算広告費（3ヶ月按分・合計）</div><div class="value accent">${fmtYen(totalCostAmortized3)}</div></div>
       <div class="kpi"><div class="label">概算CPA（全体平均）</div><div class="value">${isFinite(avgCpa) ? fmtYen(avgCpa) : '—'}</div></div>
     `;
 
@@ -5772,7 +5778,7 @@
       <thead><tr>
         <th>商材</th><th>オファー</th><th>代理店</th><th>方式</th>
         <th class="num">上限件数</th><th class="num">単価/CPA(円)</th>
-        <th class="num">概算広告費</th><th></th>
+        <th class="num">概算広告費</th><th class="num">概算広告費(3ヶ月按分)</th><th></th>
       </tr></thead>
       <tbody>${rows.length ? rows.map((r,i)=>{
         const categoryOpts = ['<option value="">（選択）</option>'].concat(
@@ -5795,9 +5801,10 @@
           <td class="num"><input type="number" class="js-bp-capcount" data-i="${i}" value="${Number(r.capCount)||0}" min="0" style="width:90px;text-align:right;"></td>
           <td class="num"><input type="number" class="js-bp-unit" data-i="${i}" value="${Number(bpUnitValue(r))||0}" min="0" style="width:100px;text-align:right;"></td>
           <td class="num" id="bpCostCell${i}">${fmtYen(budgetRowCost(r))}</td>
+          <td class="num" id="bpCostAmortizedCell${i}">${fmtYen(budgetRowCostAmortized3(r))}</td>
           <td><button type="button" class="btn small danger js-bp-del" data-i="${i}">×</button></td>
         </tr>`;
-      }).join('') : emptyRow(8)}</tbody>
+      }).join('') : emptyRow(9)}</tbody>
     `;
     // 件数・単価を打っている最中にテーブル全体を作り直すとカーソル/フォーカスが
     // 飛んでしまうため、この2つの入力欄だけは「その行の概算広告費セルと上部
@@ -5809,12 +5816,15 @@
     function refreshRowCostAndSummary(i){
       const cell = document.getElementById('bpCostCell'+i);
       if (cell) cell.textContent = fmtYen(budgetRowCost(rows[i]));
+      const amortizedCell = document.getElementById('bpCostAmortizedCell'+i);
+      if (amortizedCell) amortizedCell.textContent = fmtYen(budgetRowCostAmortized3(rows[i]));
       const t = rows.reduce((s, r) => s + (Number(r.capCount) || 0), 0);
       const c = rows.reduce((s, r) => s + budgetRowCost(r), 0);
       const a = t > 0 ? c / t : NaN;
       document.getElementById('bpSummaryKpis').innerHTML = `
         <div class="kpi"><div class="label">当月の上限件数（合計）</div><div class="value">${fmtNum(t)}</div></div>
         <div class="kpi"><div class="label">概算広告費（合計）</div><div class="value accent">${fmtYen(c)}</div></div>
+        <div class="kpi"><div class="label">概算広告費（3ヶ月按分・合計）</div><div class="value accent">${fmtYen(c / 3)}</div></div>
         <div class="kpi"><div class="label">概算CPA（全体平均）</div><div class="value">${isFinite(a) ? fmtYen(a) : '—'}</div></div>
       `;
     }
