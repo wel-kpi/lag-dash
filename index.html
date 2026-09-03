@@ -347,7 +347,9 @@
 
     <div class="nav-group-label">収益管理</div>
     <button data-tab="budget">🎯 予算管理<span class="wip-tag">準備中</span></button>
-    <button data-tab="annualplan">🗓️ 年間計画<span class="wip-tag">準備中</span></button>
+    <button data-tab="annualplan">🗓️ 進捗<span class="wip-tag">準備中</span></button>
+    <button data-tab="targetmin">🎯 目標(MIN)<span class="wip-tag">準備中</span></button>
+    <button data-tab="targetmax">🎯 目標(MAX)<span class="wip-tag">準備中</span></button>
     <button data-tab="invoices">🧾 請求書<span class="wip-tag">準備中</span></button>
 
     <div class="nav-group-label">分析管理</div>
@@ -751,19 +753,49 @@
     </div>
   </section>
 
-  <!-- ANNUAL PLAN -->
+  <!-- PROGRESS (旧: 年間計画) -->
   <section id="tab-annualplan" style="display:none;">
     <div class="note-box"><strong>🚧 準備中：</strong>実データとどれくらい合っているか検証中のタブです。数値はまだ参考値としてご覧ください。<br>
-      月ごとの売上・原価・広告費・利益を、商材×オファーの継続率シミュレーション（収益シミュレーションタブと同じロジック）を積み上げて計算する年間計画です。獲得実績がある月（当月まで）は実績を、それより先の月は「予算管理」タブに入力した上限件数・概算広告費を新規獲得の仮定として使います。継続率・単価・原価は「収益シミュレーション」タブの設定を使うため、精度を上げたい場合はそちらを調整してください。<br>
-      <strong>Phase 1の制限：</strong> 表示開始月より前に獲得した既存顧客の継続売上は、開始月からさかのぼれる範囲（開始月の24ヶ月前まで）の実績データがある分だけ考慮しています。それより古い獲得分の継続売上は含まれません。
+      商材ごとに「定期顧客数 = 前月の定期顧客数 ×（1-解約率）＋ 当月の新規獲得件数」「売上 = 定期顧客数 × 売上単価」で月次を積み上げます。<strong>実績入力の最終月</strong>までは下の表に直接、定期顧客数・解約率・売上単価・売上・コストを入力してください（新規獲得件数だけは受注実績／予算管理タブの上限件数から自動で入ります）。それより先の月は上記の式と「実績入力の最終月のコスト÷売上比率」で自動的に予測します。広告費は当月かかった分を当月・翌月・翌々月の3ヶ月に按分して計上します（当月分は日割りの着地見込みなので、月内の新規増減がそのまま反映されます）。毎月、実績入力の最終月を1ヶ月ずつ進めていくことで、予測が最新の実績に更新されていきます。
     </div>
     <div class="controls">
       <label>表示開始月 <input type="month" id="apStartMonthInput"></label>
+      <label>実績入力の最終月 <input type="month" id="apActualThroughInput"></label>
     </div>
     <div class="grid-kpi" id="apSummaryKpis"></div>
     <div class="panel">
-      <h2>月次損益<span class="n">（商材ごと・24ヶ月分）</span></h2>
+      <h2>月次進捗<span class="n">（商材ごと・24ヶ月分／網掛けの列は入力、それ以外は予測）</span></h2>
       <div class="table-wrap"><table class="data" id="apPlanTable"></table></div>
+    </div>
+  </section>
+
+  <!-- TARGET MIN -->
+  <section id="tab-targetmin" style="display:none;">
+    <div class="note-box"><strong>🚧 準備中：</strong>まだ調整中のタブです。<br>
+      商材・月ごとの目標値（MINケース）を数字のまま固定で記録しておく表です。計算は一切行わず、入力した値がそのまま保存されます。
+    </div>
+    <div class="controls">
+      <label>表示開始月 <input type="month" id="targetMinStartMonthInput"></label>
+    </div>
+    <div class="grid-kpi" id="targetMinKpis"></div>
+    <div class="panel">
+      <h2>目標(MIN)<span class="n">（商材ごと・24ヶ月分）</span></h2>
+      <div class="table-wrap"><table class="data" id="targetMinTable"></table></div>
+    </div>
+  </section>
+
+  <!-- TARGET MAX -->
+  <section id="tab-targetmax" style="display:none;">
+    <div class="note-box"><strong>🚧 準備中：</strong>まだ調整中のタブです。<br>
+      商材・月ごとの目標値（MAXケース）を数字のまま固定で記録しておく表です。計算は一切行わず、入力した値がそのまま保存されます。
+    </div>
+    <div class="controls">
+      <label>表示開始月 <input type="month" id="targetMaxStartMonthInput"></label>
+    </div>
+    <div class="grid-kpi" id="targetMaxKpis"></div>
+    <div class="panel">
+      <h2>目標(MAX)<span class="n">（商材ごと・24ヶ月分）</span></h2>
+      <div class="table-wrap"><table class="data" id="targetMaxTable"></table></div>
     </div>
   </section>
 
@@ -964,7 +996,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.21.0";
+  const APP_VERSION = "4.22.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -1005,6 +1037,14 @@
   // 3ヶ月按分など、実際の支出額をベースにした指標のために使う。予算上限入力
   // （BUDGET_PLAN_KEY）とは別物＝あちらは事前の見積り、こちらは確定実績）。
   const MONTHLY_AD_SPEND_KEY = 'lagnet_monthly_ad_spend_v1';
+  // 進捗タブ用。商材・月ごとの「実績入力の最終月まで」の手入力マスター
+  // （定期顧客数・解約率・売上単価・売上・コスト）。それより先の月はここから
+  // 計算で予測する。新規獲得件数・広告費は実績データ／予算管理タブから自動で
+  // 算出するため、ここには持たない。
+  const PROGRESS_ACTUALS_KEY = 'lagnet_progress_actuals_v1';
+  // 目標(MIN)・目標(MAX): 数値を変えず固定で持っておく目標値（計算なし、全項目手入力）。
+  const TARGET_MIN_KEY = 'lagnet_target_min_v1';
+  const TARGET_MAX_KEY = 'lagnet_target_max_v1';
   const MEDIA_MAP_KEY = 'lagnet_media_map_v1';
   const MEDIA_MAP_TIMESTAMPS_KEY = 'lagnet_media_map_timestamps_v1';
   const MEDIA_MAP_HISTORY_KEY = 'lagnet_media_map_history_v1';
@@ -1320,6 +1360,9 @@
     budgetPlan: BUDGET_PLAN_KEY,
     budgetTargets: BUDGET_TARGETS_KEY,
     monthlyAdSpend: MONTHLY_AD_SPEND_KEY,
+    progressActuals: PROGRESS_ACTUALS_KEY,
+    targetMin: TARGET_MIN_KEY,
+    targetMax: TARGET_MAX_KEY,
     // ダッシュボードの「着地想定」で使う手動調整・グループ別の手入力件数。
     // これが同期対象から漏れていたため、着地想定の数字だけ端末ごとに
     // バラバラになる不具合があった（定数の宣言順の都合上、キー名は
@@ -6112,164 +6155,320 @@
     wireTargetInput('.js-bp-target-cpa', (entry, val)=>{ entry.cpa = val; });
   }
 
-  // ---------- annual plan (年間計画) ----------
-  // 収益シミュレーション（LTV）タブと同じ継続率シミュレーション（simulateLTV）を、
-  // 商材・オファーごとに獲得月をずらしながら走らせ、各コホートの月次売上・原価・
-  // 広告費・利益を実際のカレンダー月に積み上げることで、年間の月次損益を再現する。
-  // 新規獲得件数は、当月までは実績（computeLandingSplit/computeLanding）、それより
-  // 先の月は「予算管理」タブの上限件数・概算広告費を仮定として使う。
+  // ---------- 進捗（旧・年間計画） ----------
+  // 商材ごとに、下記の式で月次の売上・コスト・広告費・利益を計算する:
+  //   定期顧客数[m] = 定期顧客数[m-1] × (1 - 解約率[m]/100) + 新規獲得件数[m]
+  //   売上[m] = 定期顧客数[m] × 売上単価[m]
+  //   コスト[m] = 「実績入力の最終月」のコスト÷売上の比率 × 売上[m]
+  //   広告費（計上額）[m] = raw広告費[m]/3 + raw広告費[m-1]/3 + raw広告費[m-2]/3
+  //     （当月かかった広告費を当月・翌月・翌々月の3ヶ月に按分して計上する）
+  //   利益[m] = 売上[m] - コスト[m] - 広告費（計上額）[m]
+  // 「実績入力の最終月」までは、定期顧客数・解約率・売上単価・売上・コストを
+  // 手入力のマスター（PROGRESS_ACTUALS_KEY）からそのまま使う。新規獲得件数と
+  // raw広告費は常に自動算出（過去/当月は実績、未来は予算管理タブの入力値）。
   const AP_MONTHS_TO_SHOW = 24;
-  const AP_LOOKBACK_MONTHS = 24; // 表示開始月より前に獲得した既存顧客の継続売上も拾うための遡り幅
 
-  function annualPlanOffersForCategory(category, records){
-    const groups = uniqueSorted(records.filter(r=>r.category===category && r.group).map(r=>r.group));
-    const fromRecords = uniqueSorted(groups.map(g=>resolveOffer(category, g)));
-    const plan = loadBudgetPlan();
-    const fromBudget = new Set();
-    Object.values(plan).forEach(p=>{
-      (p.rows||[]).forEach(r=>{ if (r.category===category && r.offer) fromBudget.add(r.offer); });
-    });
-    return uniqueSorted(Array.from(new Set(fromRecords.concat(Array.from(fromBudget)))));
+  function loadProgressActuals(){
+    try{ return JSON.parse(localStorage.getItem(PROGRESS_ACTUALS_KEY) || '{}'); }catch(e){ return {}; }
+  }
+  function saveProgressActuals(obj){
+    const json = JSON.stringify(obj);
+    const changed = localStorage.getItem(PROGRESS_ACTUALS_KEY) !== json;
+    localStorage.setItem(PROGRESS_ACTUALS_KEY, json);
+    if (changed) markLocalMutation();
+  }
+  function progressActualEntry(category, monthKey){
+    const all = loadProgressActuals();
+    return Object.assign({ subscriberCount:0, churnRate:0, unitPrice:0, revenue:0, cost:0 }, (all[category] && all[category][monthKey]) || {});
+  }
+  function saveProgressActualEntry(category, monthKey, entry){
+    const all = loadProgressActuals();
+    if (!all[category]) all[category] = {};
+    all[category][monthKey] = entry;
+    saveProgressActuals(all);
   }
 
-  // その商材・オファーの、ある獲得月における新規獲得件数と獲得コスト。
-  // 当月までは実績（着地想定と同じロジック）、未来の月は予算管理タブの入力値を使う。
-  function annualPlanAcquisitionForMonth(category, offer, monthKey){
-    if (monthKey <= currentMonthKey()){
-      const split = computeLandingSplit(category, offer, monthKey);
-      const landingInfo = computeLanding(category, offer, monthKey);
-      return { front: split.frontCount, upsell: split.upsellCount, adCost: landingInfo.cost };
-    }
-    const planRows = loadBudgetPlanRows(monthKey).filter(r=>r.category===category && (!offer || r.offer===offer));
-    const front = planRows.reduce((s,r)=>s+(Number(r.capCount)||0),0);
-    const adCost = planRows.reduce((s,r)=>s+budgetRowCost(r),0);
-    return { front, upsell: 0, adCost };
-  }
-
-  // displayMonths内の各商材×月について、新規件数・売上（新規/既存）・原価・広告費・
-  // 利益を集計する。獲得月は displayMonths[0] の AP_LOOKBACK_MONTHS ヶ月前まで遡って
-  // シミュレーションする（それより前に獲得したコホートの継続売上は含まれない＝Phase 1の制限）。
-  function buildAnnualPlan(displayMonths, categories){
+  // 商材の当月までの実績新規獲得件数（フロントのみ、キャンセル除く）。当月は
+  // 今日までの実績（着地の日割り延長はしない＝月が締まるまでは仮の値扱い）。
+  function apActualFrontCount(category, monthKey){
     const records = loadRecords();
-    const cells = {};
-    function cell(category, monthKey){
-      const k = category+'|'+monthKey;
-      if (!cells[k]) cells[k] = { newFront:0, newUpsell:0, orders:0, revenue:0, newRevenue:0, existingRevenue:0, cogs:0, adCost:0, otherCost:0, profit:0 };
-      return cells[k];
-    }
-    if (!displayMonths.length) return cells;
-    const acquisitionEnd = displayMonths[displayMonths.length - 1];
-    const acquisitionMonths = [];
-    for (let mk = shiftMonthKey(displayMonths[0], -AP_LOOKBACK_MONTHS); mk <= acquisitionEnd; mk = shiftMonthKey(mk, 1)){
-      acquisitionMonths.push(mk);
-    }
-
-    categories.forEach(category=>{
-      annualPlanOffersForCategory(category, records).forEach(offer=>{
-        acquisitionMonths.forEach(acqMonth=>{
-          const acq = annualPlanAcquisitionForMonth(category, offer, acqMonth);
-          if (acq.front<=0 && acq.upsell<=0 && acq.adCost<=0) return;
-          const sim = simulateLTV(category, acq.front, acq.upsell, acq.adCost, offer, acqMonth);
-          sim.rows.forEach(r=>{
-            if (r.orders<=0 && r.adCost<=0 && r.otherCost<=0) return;
-            const calMonth = shiftMonthKey(acqMonth, r.month - 1);
-            const c = cell(category, calMonth);
-            c.orders += r.orders;
-            c.revenue += r.revenue;
-            c.cogs += r.cogs;
-            c.adCost += r.adCost;
-            c.otherCost += r.otherCost;
-            c.profit += r.profit;
-            if (r.month === 1){ c.newFront += r.frontCount; c.newUpsell += r.upsellCount; c.newRevenue += r.revenue; }
-            else { c.existingRevenue += r.revenue; }
-          });
-        });
-      });
-    });
-    return cells;
+    const { start, end } = monthBounds(monthKey);
+    const to = monthKey === currentMonthKey() ? todayStr() : end;
+    return filterRecords(records, { from: start, to, category }).filter(r=>r.type==='front' && !r.isCancel).length;
+  }
+  // 新規獲得件数: 過去/当月は実績、未来は予算管理タブの上限件数（商材合計）を仮定として使う。
+  function apNewAcqForMonth(category, monthKey){
+    if (monthKey <= currentMonthKey()) return apActualFrontCount(category, monthKey);
+    const planRows = loadBudgetPlanRows(monthKey).filter(r=>r.category===category);
+    return planRows.reduce((s,r)=>s+(Number(r.capCount)||0),0);
+  }
+  // raw広告費（3ヶ月按分する前の、その月に実際にかかった/かかる予定の広告費）。
+  // 当月は日割り着地見込み（月途中の新規増減がそのまま反映される）、過去月は
+  // 確定実績、未来月は予算管理タブの概算広告費を使う。
+  function apAdCostRawForMonth(category, monthKey){
+    if (monthKey === currentMonthKey()) return computeLanding(category, '', monthKey).landingCost;
+    if (monthKey < currentMonthKey()) return computeLanding(category, '', monthKey).cost;
+    const planRows = loadBudgetPlanRows(monthKey).filter(r=>r.category===category);
+    return planRows.reduce((s,r)=>s+budgetRowCost(r),0);
   }
 
   let apSelectedStartMonth = null;
+  let apActualThroughMonth = null; // 実績入力の最終月（この月まではマスターの手入力値を使う）
   function apDefaultStartMonth(records){
     const months = records.map(r=>r.month).filter(Boolean).sort();
     return months.length ? months[0] : shiftMonthKey(currentMonthKey(), -6);
   }
+  function apDefaultActualThroughMonth(){
+    return shiftMonthKey(currentMonthKey(), -1);
+  }
 
-  function renderAnnualPlanTab(){
+  // displayMonths内の各商材×月について、進捗（実績＋予測）を計算する。
+  function buildProgressPlan(displayMonths, categories, actualThroughMonth){
+    if (!displayMonths.length) return {};
+    const actuals = loadProgressActuals();
+    const result = {};
+    categories.forEach(category=>{
+      result[category] = {};
+      const boundaryEntry = (actuals[category] && actuals[category][actualThroughMonth]) || null;
+      const costRatio = (boundaryEntry && Number(boundaryEntry.revenue) > 0) ? (Number(boundaryEntry.cost)||0) / Number(boundaryEntry.revenue) : 0;
+
+      let prevSubscribers = 0, prevChurnRate = 0, prevUnitPrice = 0;
+      if (displayMonths[0] > actualThroughMonth && boundaryEntry){
+        prevSubscribers = Number(boundaryEntry.subscriberCount) || 0;
+        prevChurnRate = Number(boundaryEntry.churnRate) || 0;
+        prevUnitPrice = Number(boundaryEntry.unitPrice) || 0;
+      }
+
+      displayMonths.forEach(mk=>{
+        const isActual = mk <= actualThroughMonth;
+        const newAcq = apNewAcqForMonth(category, mk);
+        let row;
+        if (isActual){
+          const e = progressActualEntry(category, mk);
+          row = { isActual:true, newAcq, subscriberCount:Number(e.subscriberCount)||0, churnRate:Number(e.churnRate)||0, unitPrice:Number(e.unitPrice)||0, revenue:Number(e.revenue)||0, cost:Number(e.cost)||0 };
+        } else {
+          const churnRate = prevChurnRate;
+          const unitPrice = prevUnitPrice;
+          const subscriberCount = prevSubscribers * (1 - churnRate/100) + newAcq;
+          const revenue = subscriberCount * unitPrice;
+          const cost = costRatio * revenue;
+          row = { isActual:false, newAcq, subscriberCount, churnRate, unitPrice, revenue, cost };
+        }
+        prevSubscribers = row.subscriberCount;
+        prevChurnRate = row.churnRate;
+        prevUnitPrice = row.unitPrice;
+        result[category][mk] = row;
+      });
+    });
+
+    // 広告費は3ヶ月按分するため、rawの値がそろってから最後にまとめて計算する。
+    categories.forEach(category=>{
+      displayMonths.forEach(mk=>{
+        const row = result[category][mk];
+        const raw0 = apAdCostRawForMonth(category, mk);
+        const raw1 = apAdCostRawForMonth(category, shiftMonthKey(mk, -1));
+        const raw2 = apAdCostRawForMonth(category, shiftMonthKey(mk, -2));
+        row.adCostRaw = raw0;
+        row.adCost = raw0/3 + raw1/3 + raw2/3;
+        row.profit = row.revenue - row.cost - row.adCost;
+      });
+    });
+    return result;
+  }
+
+  const PROGRESS_METRICS = [
+    { key:'newAcq', label:'新規獲得件数', editable:false, fmt: n=>fmtNum(Math.round(n)) },
+    { key:'subscriberCount', label:'定期顧客数', editable:true, fmt: n=>fmtNum(Math.round(n)) },
+    { key:'churnRate', label:'解約率(%)', editable:true, fmt: n=>n.toFixed(1)+'%' },
+    { key:'unitPrice', label:'売上単価', editable:true, fmt: n=>fmtYen(n) },
+    { key:'revenue', label:'売上', editable:true, fmt: n=>fmtYen(n) },
+    { key:'cost', label:'コスト', editable:true, fmt: n=>fmtYen(n) },
+    { key:'adCost', label:'広告費(3ヶ月按分計上)', editable:false, fmt: n=>fmtYen(n) },
+    { key:'profit', label:'利益', editable:false, fmt: n=>fmtYen(n), style: n=>n<0?'color:var(--danger);':'' }
+  ];
+
+  function renderProgressTab(){
     const records = loadRecords();
     if (!apSelectedStartMonth) apSelectedStartMonth = apDefaultStartMonth(records);
+    if (!apActualThroughMonth) apActualThroughMonth = apDefaultActualThroughMonth();
     const startInput = document.getElementById('apStartMonthInput');
     if (startInput && startInput.value !== apSelectedStartMonth) startInput.value = apSelectedStartMonth;
+    const actualInput = document.getElementById('apActualThroughInput');
+    if (actualInput && actualInput.value !== apActualThroughMonth) actualInput.value = apActualThroughMonth;
 
     const displayMonths = [];
     for (let i=0, mk=apSelectedStartMonth; i<AP_MONTHS_TO_SHOW; i++, mk=shiftMonthKey(mk,1)) displayMonths.push(mk);
 
     const categories = bpKnownCategories(records);
-    const cells = buildAnnualPlan(displayMonths, categories);
+    const plan = buildProgressPlan(displayMonths, categories, apActualThroughMonth);
 
-    function totalsForMonth(monthKey){
-      const t = { newFront:0, newUpsell:0, orders:0, revenue:0, newRevenue:0, existingRevenue:0, cogs:0, adCost:0, otherCost:0, profit:0 };
+    function totalsForMonth(mk){
+      const t = { newAcq:0, subscriberCount:0, revenue:0, cost:0, adCost:0, profit:0 };
       categories.forEach(cat=>{
-        const c = cells[cat+'|'+monthKey];
-        if (!c) return;
-        Object.keys(t).forEach(k=>{ t[k]+=c[k]; });
+        const r = plan[cat] && plan[cat][mk];
+        if (!r) return;
+        t.newAcq+=r.newAcq; t.subscriberCount+=r.subscriberCount; t.revenue+=r.revenue; t.cost+=r.cost; t.adCost+=r.adCost; t.profit+=r.profit;
       });
       return t;
     }
 
-    // ---- サマリーKPI（表示期間の合計） ----
-    let sumRevenue=0, sumAdCost=0, sumProfit=0, sumNewFront=0;
-    displayMonths.forEach(mk=>{
-      const t = totalsForMonth(mk);
-      sumRevenue+=t.revenue; sumAdCost+=t.adCost; sumProfit+=t.profit; sumNewFront+=t.newFront;
-    });
+    let sumRevenue=0, sumAdCost=0, sumProfit=0, sumNewAcq=0;
+    displayMonths.forEach(mk=>{ const t=totalsForMonth(mk); sumRevenue+=t.revenue; sumAdCost+=t.adCost; sumProfit+=t.profit; sumNewAcq+=t.newAcq; });
     const profitRate = sumRevenue>0 ? (sumProfit/sumRevenue*100) : NaN;
     document.getElementById('apSummaryKpis').innerHTML = `
       <div class="kpi"><div class="label">期間合計 売上</div><div class="value accent">${fmtYen(sumRevenue)}</div></div>
       <div class="kpi"><div class="label">期間合計 利益</div><div class="value ${sumProfit>=0?'good':'danger'}">${fmtYen(sumProfit)}</div><div class="sub">利益率 ${isFinite(profitRate)?profitRate.toFixed(1)+'%':'—'}</div></div>
-      <div class="kpi"><div class="label">期間合計 広告費</div><div class="value">${fmtYen(sumAdCost)}</div></div>
-      <div class="kpi"><div class="label">期間合計 新規獲得件数</div><div class="value">${fmtNum(Math.round(sumNewFront))}</div></div>
+      <div class="kpi"><div class="label">期間合計 広告費(3ヶ月按分計上)</div><div class="value">${fmtYen(sumAdCost)}</div></div>
+      <div class="kpi"><div class="label">期間合計 新規獲得件数</div><div class="value">${fmtNum(Math.round(sumNewAcq))}</div></div>
     `;
 
-    // ---- 月次損益テーブル（商材ごとに5指標の行、末尾に全商材合計） ----
-    const metricRows = [
-      { key:'newFront', label:'新規獲得件数', fmt: n=>fmtNum(Math.round(n)) },
-      { key:'revenue', label:'売上', fmt: n=>fmtYen(n) },
-      { key:'cogs', label:'原価', fmt: n=>fmtYen(n) },
-      { key:'adCost', label:'広告費', fmt: n=>fmtYen(n) },
-      { key:'profit', label:'利益', fmt: n=>fmtYen(n), style: n=>n<0?'color:var(--danger);':'' }
-    ];
-    const monthHeaderCells = displayMonths.map(mk=>`<th class="num">${mk.slice(0,4)}/${mk.slice(5,7)}</th>`).join('');
+    const monthHeaderCells = displayMonths.map(mk=>{
+      const isActual = mk <= apActualThroughMonth;
+      return `<th class="num">${mk.slice(0,4)}/${mk.slice(5,7)}${isActual?'':'<br><span style="font-weight:400;color:var(--text-dim);">予測</span>'}</th>`;
+    }).join('');
+
     let bodyHtml = '';
     categories.forEach(cat=>{
       bodyHtml += `<tr><td colspan="${displayMonths.length+2}" style="font-weight:700;">${escapeHtml(cat)}</td></tr>`;
-      metricRows.forEach(m=>{
-        const rowCellsHtml = displayMonths.map(mk=>{
-          const c = cells[cat+'|'+mk];
-          const v = c ? c[m.key] : 0;
-          const style = m.style ? m.style(v) : '';
+      PROGRESS_METRICS.forEach(m=>{
+        const cellsHtml = displayMonths.map(mk=>{
+          const row = plan[cat][mk];
+          const v = row[m.key];
+          const isActual = mk <= apActualThroughMonth;
+          if (m.editable && isActual){
+            return `<td class="num"><input type="number" step="any" class="js-ap-input" data-cat="${escapeHtml(cat)}" data-month="${mk}" data-field="${m.key}" value="${v||0}" style="width:90px;text-align:right;"></td>`;
+          }
+          const style = (m.style ? m.style(v) : '') + (isActual ? '' : 'color:var(--text-dim);font-style:italic;');
           return `<td class="num" style="${style}">${v ? m.fmt(v) : '—'}</td>`;
         }).join('');
-        const total = displayMonths.reduce((s,mk)=>{ const c = cells[cat+'|'+mk]; return s + (c ? c[m.key] : 0); }, 0);
-        bodyHtml += `<tr><td style="padding-left:20px;color:var(--text-dim);">${m.label}</td>${rowCellsHtml}<td class="num" style="font-weight:700;">${m.fmt(total)}</td></tr>`;
+        const total = displayMonths.reduce((s,mk)=>s+(plan[cat][mk][m.key]||0),0);
+        const totalDisplay = (m.key==='churnRate' || m.key==='unitPrice') ? '—' : m.fmt(total);
+        bodyHtml += `<tr><td style="padding-left:20px;color:var(--text-dim);">${m.label}</td>${cellsHtml}<td class="num" style="font-weight:700;">${totalDisplay}</td></tr>`;
       });
     });
     bodyHtml += `<tr><td colspan="${displayMonths.length+2}" style="font-weight:700;border-top:2px solid var(--border);">合計</td></tr>`;
-    metricRows.forEach(m=>{
-      const rowCellsHtml = displayMonths.map(mk=>{
+    [['newAcq',n=>fmtNum(Math.round(n))],['revenue',n=>fmtYen(n)],['cost',n=>fmtYen(n)],['adCost',n=>fmtYen(n)],['profit',n=>fmtYen(n)]].forEach(([key,fmt])=>{
+      const label = PROGRESS_METRICS.find(m=>m.key===key).label;
+      const cellsHtml = displayMonths.map(mk=>{
         const t = totalsForMonth(mk);
-        const v = t[m.key];
-        const style = m.style ? m.style(v) : '';
-        return `<td class="num" style="${style}">${v ? m.fmt(v) : '—'}</td>`;
+        const v = t[key];
+        const isActual = mk <= apActualThroughMonth;
+        const style = (key==='profit' && v<0 ? 'color:var(--danger);' : '') + (isActual?'':'color:var(--text-dim);font-style:italic;');
+        return `<td class="num" style="${style}">${v ? fmt(v) : '—'}</td>`;
       }).join('');
-      const total = displayMonths.reduce((s,mk)=>s+totalsForMonth(mk)[m.key],0);
-      bodyHtml += `<tr><td style="padding-left:20px;color:var(--text-dim);">${m.label}</td>${rowCellsHtml}<td class="num" style="font-weight:700;">${m.fmt(total)}</td></tr>`;
+      const total = displayMonths.reduce((s,mk)=>s+totalsForMonth(mk)[key],0);
+      bodyHtml += `<tr><td style="padding-left:20px;color:var(--text-dim);">${label}</td>${cellsHtml}<td class="num" style="font-weight:700;">${fmt(total)}</td></tr>`;
     });
 
     document.getElementById('apPlanTable').innerHTML = `
       <thead><tr><th>指標</th>${monthHeaderCells}<th class="num">合計</th></tr></thead>
       <tbody>${bodyHtml}</tbody>
     `;
+
+    document.querySelectorAll('.js-ap-input').forEach(inp=>{
+      let t=null;
+      function commit(){
+        const cat = inp.dataset.cat, mk = inp.dataset.month, field = inp.dataset.field;
+        const entry = progressActualEntry(cat, mk);
+        entry[field] = Number(inp.value) || 0;
+        saveProgressActualEntry(cat, mk, entry);
+      }
+      inp.addEventListener('input', ()=>{ clearTimeout(t); t=setTimeout(commit, 500); });
+      inp.addEventListener('change', ()=>{ clearTimeout(t); commit(); renderProgressTab(); });
+    });
+  }
+
+  // ---------- 目標(MIN)・目標(MAX) ----------
+  // 計算式は一切持たず、商材・月ごとに数値をそのまま固定で入力しておく表。
+  function loadFlatTargets(key){
+    try{ return JSON.parse(localStorage.getItem(key) || '{}'); }catch(e){ return {}; }
+  }
+  function saveFlatTargets(key, obj){
+    const json = JSON.stringify(obj);
+    const changed = localStorage.getItem(key) !== json;
+    localStorage.setItem(key, json);
+    if (changed) markLocalMutation();
+  }
+  function flatTargetEntry(key, category, monthKey){
+    const all = loadFlatTargets(key);
+    return Object.assign({ subscriberCount:0, churnRate:0, unitPrice:0, revenue:0, cost:0, adCost:0, profit:0 }, (all[category] && all[category][monthKey]) || {});
+  }
+  function saveFlatTargetEntry(key, category, monthKey, entry){
+    const all = loadFlatTargets(key);
+    if (!all[category]) all[category] = {};
+    all[category][monthKey] = entry;
+    saveFlatTargets(key, all);
+  }
+  const FLAT_TARGET_METRICS = [
+    { key:'subscriberCount', label:'定期顧客数', fmt: n=>fmtNum(Math.round(n)) },
+    { key:'churnRate', label:'解約率(%)', fmt: n=>n.toFixed(1)+'%' },
+    { key:'unitPrice', label:'売上単価', fmt: n=>fmtYen(n) },
+    { key:'revenue', label:'売上', fmt: n=>fmtYen(n) },
+    { key:'cost', label:'コスト', fmt: n=>fmtYen(n) },
+    { key:'adCost', label:'広告費', fmt: n=>fmtYen(n) },
+    { key:'profit', label:'利益', fmt: n=>fmtYen(n), style: n=>n<0?'color:var(--danger);':'' }
+  ];
+
+  let apTargetMinStartMonth = null, apTargetMaxStartMonth = null;
+
+  function renderFlatTargetTab(storageKey, tableElId, kpiElId, monthInputElId, getStart, setStart){
+    const records = loadRecords();
+    const categories = bpKnownCategories(records);
+    let start = getStart();
+    if (!start){ start = apDefaultStartMonth(records); setStart(start); }
+    const monthInput = document.getElementById(monthInputElId);
+    if (monthInput && monthInput.value !== start) monthInput.value = start;
+
+    const displayMonths = [];
+    for (let i=0, mk=start; i<AP_MONTHS_TO_SHOW; i++, mk=shiftMonthKey(mk,1)) displayMonths.push(mk);
+
+    let sumRevenue=0, sumProfit=0;
+    const monthHeaderCells = displayMonths.map(mk=>`<th class="num">${mk.slice(0,4)}/${mk.slice(5,7)}</th>`).join('');
+    let bodyHtml = '';
+    categories.forEach(cat=>{
+      bodyHtml += `<tr><td colspan="${displayMonths.length+2}" style="font-weight:700;">${escapeHtml(cat)}</td></tr>`;
+      FLAT_TARGET_METRICS.forEach(m=>{
+        const cellsHtml = displayMonths.map(mk=>{
+          const v = Number(flatTargetEntry(storageKey, cat, mk)[m.key]) || 0;
+          return `<td class="num"><input type="number" step="any" class="js-flat-target-input" data-store="${storageKey}" data-cat="${escapeHtml(cat)}" data-month="${mk}" data-field="${m.key}" value="${v}" style="width:90px;text-align:right;"></td>`;
+        }).join('');
+        const total = displayMonths.reduce((s,mk)=>s+(Number(flatTargetEntry(storageKey,cat,mk)[m.key])||0),0);
+        const totalDisplay = (m.key==='churnRate'||m.key==='unitPrice') ? '—' : m.fmt(total);
+        bodyHtml += `<tr><td style="padding-left:20px;color:var(--text-dim);">${m.label}</td>${cellsHtml}<td class="num" style="font-weight:700;">${totalDisplay}</td></tr>`;
+        if (m.key==='revenue') displayMonths.forEach(mk=>{ sumRevenue += Number(flatTargetEntry(storageKey,cat,mk).revenue)||0; });
+        if (m.key==='profit') displayMonths.forEach(mk=>{ sumProfit += Number(flatTargetEntry(storageKey,cat,mk).profit)||0; });
+      });
+    });
+
+    document.getElementById(kpiElId).innerHTML = `
+      <div class="kpi"><div class="label">期間合計 目標売上</div><div class="value accent">${fmtYen(sumRevenue)}</div></div>
+      <div class="kpi"><div class="label">期間合計 目標利益</div><div class="value ${sumProfit>=0?'good':'danger'}">${fmtYen(sumProfit)}</div></div>
+    `;
+    document.getElementById(tableElId).innerHTML = `
+      <thead><tr><th>指標</th>${monthHeaderCells}<th class="num">合計</th></tr></thead>
+      <tbody>${bodyHtml}</tbody>
+    `;
+
+    document.querySelectorAll(`.js-flat-target-input[data-store="${storageKey}"]`).forEach(inp=>{
+      let t=null;
+      function commit(){
+        const cat = inp.dataset.cat, mk = inp.dataset.month, field = inp.dataset.field;
+        const entry = flatTargetEntry(storageKey, cat, mk);
+        entry[field] = Number(inp.value) || 0;
+        saveFlatTargetEntry(storageKey, cat, mk, entry);
+      }
+      inp.addEventListener('input', ()=>{ clearTimeout(t); t=setTimeout(commit, 500); });
+      inp.addEventListener('change', ()=>{ clearTimeout(t); commit(); });
+    });
+  }
+
+  function renderTargetMinTab(){
+    renderFlatTargetTab(TARGET_MIN_KEY, 'targetMinTable', 'targetMinKpis', 'targetMinStartMonthInput',
+      ()=>apTargetMinStartMonth, v=>{ apTargetMinStartMonth = v; });
+  }
+  function renderTargetMaxTab(){
+    renderFlatTargetTab(TARGET_MAX_KEY, 'targetMaxTable', 'targetMaxKpis', 'targetMaxStartMonthInput',
+      ()=>apTargetMaxStartMonth, v=>{ apTargetMaxStartMonth = v; });
   }
 
   // ---------- invoices tab ----------
@@ -6978,7 +7177,9 @@
     renderReport();
     renderCostTab();
     renderBudgetTab();
-    renderAnnualPlanTab();
+    renderProgressTab();
+    renderTargetMinTab();
+    renderTargetMaxTab();
     renderInvoicesTab();
     renderHistory();
     renderDeleteGroupSelect();
@@ -6990,7 +7191,7 @@
     btn.addEventListener('click', ()=>{
       document.querySelectorAll('nav.tabs button').forEach(b=>b.classList.remove('active'));
       btn.classList.add('active');
-      ['dashboard','summary','trend','media','ltv','cost','budget','annualplan','invoices','demographics','report','manage'].forEach(t=>{
+      ['dashboard','summary','trend','media','ltv','cost','budget','annualplan','targetmin','targetmax','invoices','demographics','report','manage'].forEach(t=>{
         document.getElementById('tab-'+t).style.display = (t===btn.dataset.tab) ? '' : 'none';
       });
       renderAll();
@@ -7184,7 +7385,22 @@
   document.getElementById('apStartMonthInput').addEventListener('change', (e)=>{
     if (!e.target.value) return;
     apSelectedStartMonth = e.target.value;
-    renderAnnualPlanTab();
+    renderProgressTab();
+  });
+  document.getElementById('apActualThroughInput').addEventListener('change', (e)=>{
+    if (!e.target.value) return;
+    apActualThroughMonth = e.target.value;
+    renderProgressTab();
+  });
+  document.getElementById('targetMinStartMonthInput').addEventListener('change', (e)=>{
+    if (!e.target.value) return;
+    apTargetMinStartMonth = e.target.value;
+    renderTargetMinTab();
+  });
+  document.getElementById('targetMaxStartMonthInput').addEventListener('change', (e)=>{
+    if (!e.target.value) return;
+    apTargetMaxStartMonth = e.target.value;
+    renderTargetMaxTab();
   });
   document.getElementById('invoiceDriveMonthAddBtn').addEventListener('click', ()=>{
     const m = document.getElementById('invoiceDriveMonthAdd').value;
