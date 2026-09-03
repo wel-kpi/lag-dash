@@ -681,12 +681,23 @@
   <!-- BUDGET MANAGEMENT -->
   <section id="tab-budget" style="display:none;">
     <div class="note-box">
-      毎月、各代理店に与えている上限件数を商材・オファーごとに管理するタブです（実装中：まずはデータの土台と画面の枠だけ用意しています）。
+      毎月、各代理店に与えている上限件数を商材・オファーごとに管理するタブです。
     </div>
     <div class="controls">
       <label>対象月 <input type="month" id="bpMonthInput"></label>
     </div>
     <div class="grid-kpi" id="bpSummaryKpis"></div>
+    <div class="panel">
+      <h2>月次広告費実績<span class="n">（マスター・手入力）</span></h2>
+      <div class="note-box">
+        2026年6月以降の各月の広告費合計を手入力で記録しておくマスターです。上の「概算広告費（3ヶ月按分）」は、対象月を含む直近3ヶ月分（例: 9月なら7〜9月）の合計をここから3で割って計算します。入力した値は他の端末とも共有されます。
+      </div>
+      <div class="table-wrap"><table class="data" id="bpMonthlySpendTable"></table></div>
+      <div class="controls" style="margin-top:8px;">
+        <label>月を追加 <input type="month" id="bpSpendAddMonth"></label>
+        <button type="button" class="btn small" id="bpSpendAddBtn">＋ 追加</button>
+      </div>
+    </div>
     <div class="panel">
       <h2>予算上限の入力<span class="n">（商材・オファー・代理店ごと）</span></h2>
       <div class="note-box">
@@ -699,12 +710,12 @@
     </div>
     <div class="panel">
       <h2>目標件数と余力<span class="n">（商材ごと）</span></h2>
-      <div class="note-box">次のステップで、商材ごとの「元々の目標件数」の入力と、実績・上限との差分（残件数・残予算）をここに実装します。</div>
+      <div class="note-box">「目標件数」は商材ごとに手入力してください。「上限件数（合計）」は上の予算上限入力の商材別合計、「実績（現在）」はダッシュボードの着地想定と同じロジックで集計した今月の実績です。残件数・残予算がマイナスになると赤字＋⚠で表示されます。</div>
       <div class="table-wrap"><table class="data" id="bpTargetsTable"></table></div>
     </div>
     <div class="panel">
       <h2>予実比較・着地<span class="n">（当初目標 vs 実績・着地見込み）</span></h2>
-      <div class="note-box">次のステップで、当初目標と実績・着地見込みの比較をここに実装します（商材間の予算融通ロジック・アラート表示を含む）。</div>
+      <div class="note-box">着地見込みは、今月ここまでの実績を日割り平均で月末まで延長した予測値です（ダッシュボードの着地想定と同じロジック）。差分は「着地見込み − 目標」で、件数はプラスが超過達成、広告費はプラスが予算オーバーです。</div>
       <div class="table-wrap"><table class="data" id="bpComparisonTable"></table></div>
     </div>
   </section>
@@ -903,7 +914,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.16.0";
+  const APP_VERSION = "4.17.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -940,6 +951,10 @@
   // 明細合計と目標を突き合わせる必要があるため）。
   const BUDGET_PLAN_KEY = 'lagnet_budget_plan_v1';
   const BUDGET_TARGETS_KEY = 'lagnet_budget_targets_v1';
+  // 月ごとの広告費「実績」合計を手入力で記録するマスターデータ（概算広告費の
+  // 3ヶ月按分など、実際の支出額をベースにした指標のために使う。予算上限入力
+  // （BUDGET_PLAN_KEY）とは別物＝あちらは事前の見積り、こちらは確定実績）。
+  const MONTHLY_AD_SPEND_KEY = 'lagnet_monthly_ad_spend_v1';
   const MEDIA_MAP_KEY = 'lagnet_media_map_v1';
   const MEDIA_MAP_TIMESTAMPS_KEY = 'lagnet_media_map_timestamps_v1';
   const MEDIA_MAP_HISTORY_KEY = 'lagnet_media_map_history_v1';
@@ -1254,6 +1269,7 @@
     invoiceVendorRules: INVOICE_VENDOR_RULES_KEY,
     budgetPlan: BUDGET_PLAN_KEY,
     budgetTargets: BUDGET_TARGETS_KEY,
+    monthlyAdSpend: MONTHLY_AD_SPEND_KEY,
     // ダッシュボードの「着地想定」で使う手動調整・グループ別の手入力件数。
     // これが同期対象から漏れていたため、着地想定の数字だけ端末ごとに
     // バラバラになる不具合があった（定数の宣言順の都合上、キー名は
@@ -5680,6 +5696,31 @@
     all[monthKey] = targets;
     saveBudgetTargets(all);
   }
+  // 月次広告費「実績」マスター（手入力）: { [monthKey]: 合計金額 }
+  function loadMonthlyAdSpend(){
+    try{ return JSON.parse(localStorage.getItem(MONTHLY_AD_SPEND_KEY) || '{}'); }catch(e){ return {}; }
+  }
+  function saveMonthlyAdSpend(obj){
+    const json = JSON.stringify(obj);
+    const changed = localStorage.getItem(MONTHLY_AD_SPEND_KEY) !== json;
+    localStorage.setItem(MONTHLY_AD_SPEND_KEY, json);
+    if (changed) markLocalMutation();
+  }
+  // "YYYY-MM" を delta ヶ月分ずらす（負の値で過去へ）
+  function shiftMonthKey(monthKey, delta){
+    const [y, m] = monthKey.split('-').map(Number);
+    const d = new Date(y, (m - 1) + delta, 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  }
+  // monthKeyを含む直近3ヶ月（例: 2026-09なら7,8,9月）の広告費実績の合計を3で割った値。
+  // 未入力の月は0として扱う（合計・按分値ともに、その旨をUI側の内訳表示で分かるようにする）。
+  function bpTrailing3MonthAdSpend(monthKey){
+    const spend = loadMonthlyAdSpend();
+    const months = [shiftMonthKey(monthKey, -2), shiftMonthKey(monthKey, -1), monthKey];
+    const values = months.map(mk => Number(spend[mk]) || 0);
+    const total = values.reduce((s, v) => s + v, 0);
+    return { months, values, total, amortized: total / 3 };
+  }
   function defaultBudgetRow(overrides){
     return Object.assign({
       id: Date.now() + '-' + Math.random().toString(36).slice(2, 8),
@@ -5694,11 +5735,6 @@
     const unit = row.mode === 'budget' ? (Number(row.avgCpa)||0) : (Number(row.unitCost)||0);
     return (Number(row.capCount)||0) * unit;
   }
-  // 概算広告費（3ヶ月按分）＝ 概算広告費を単純に3で割った月換算値。
-  function budgetRowCostAmortized3(row){
-    return budgetRowCost(row) / 3;
-  }
-
   let bpSelectedMonth = null; // null = 初回表示時に当月を使う
 
   // 方式（パターンA/B）に応じて、どちらのフィールドを「単価/CPA」欄として
@@ -5750,22 +5786,87 @@
     if (found != null) row.unitCost = found;
   }
 
+  // 2026年6月以降、当月から3ヶ月先までの月をあらかじめ0円で用意しておく
+  // （まだ手入力していない月も一覧に出て、埋め忘れに気付きやすいように）。
+  // 既に入力済みの月の値は上書きしない。
+  function bpEnsureSeedMonthlyAdSpend(){
+    const spend = loadMonthlyAdSpend();
+    let changed = false;
+    const end = shiftMonthKey(currentMonthKey(), 3);
+    let mk = '2026-06';
+    while (mk <= end){
+      if (!(mk in spend)){ spend[mk] = 0; changed = true; }
+      mk = shiftMonthKey(mk, 1);
+    }
+    if (changed) saveMonthlyAdSpend(spend);
+    return spend;
+  }
+  // 「概算広告費（3ヶ月按分）」KPIだけをその場で更新する（月次広告費実績の
+  // 入力欄で数値を打っている最中に、予算上限入力テーブルまで作り直して
+  // フォーカスを飛ばさないようにするため）。
+  function refreshTrailing3Kpi(){
+    const tr = bpTrailing3MonthAdSpend(bpSelectedMonth);
+    const label = tr.months.map((mk,idx)=>`${Number(mk.split('-')[1])}月:${fmtYen(tr.values[idx])}`).join(' ／ ') + '（未入力の月は¥0として計算）';
+    const v = document.getElementById('bpTrailing3Value');
+    if (v) v.textContent = fmtYen(tr.amortized);
+    const s = document.getElementById('bpTrailing3Sub');
+    if (s) s.textContent = label;
+  }
+  function renderBpMonthlySpendTable(){
+    const spend = bpEnsureSeedMonthlyAdSpend();
+    const months = Object.keys(spend).sort();
+    document.getElementById('bpMonthlySpendTable').innerHTML = months.length ? `
+      <thead><tr><th>月</th><th class="num">広告費合計（実績・手入力）</th><th></th></tr></thead>
+      <tbody>${months.map(mk=>{
+        const [y, m] = mk.split('-');
+        return `<tr>
+          <td>${y}年${Number(m)}月</td>
+          <td class="num"><input type="number" class="js-bp-spend" data-month="${mk}" value="${Number(spend[mk])||0}" min="0" style="width:140px;text-align:right;"></td>
+          <td><button type="button" class="btn small danger js-bp-spend-del" data-month="${mk}">×</button></td>
+        </tr>`;
+      }).join('')}</tbody>
+    ` : emptyRow(3);
+
+    document.querySelectorAll('.js-bp-spend').forEach(inp=>{
+      let t = null;
+      function commit(){
+        const cur = loadMonthlyAdSpend();
+        cur[inp.dataset.month] = Number(inp.value) || 0;
+        saveMonthlyAdSpend(cur);
+        refreshTrailing3Kpi();
+      }
+      inp.addEventListener('input', ()=>{ clearTimeout(t); t = setTimeout(commit, 500); });
+      inp.addEventListener('change', ()=>{ clearTimeout(t); commit(); });
+    });
+    document.querySelectorAll('.js-bp-spend-del').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const cur = loadMonthlyAdSpend();
+        delete cur[btn.dataset.month];
+        saveMonthlyAdSpend(cur);
+        renderBpMonthlySpendTable();
+        refreshTrailing3Kpi();
+      });
+    });
+  }
+
   function renderBudgetTab(){
     if (!bpSelectedMonth) bpSelectedMonth = currentMonthKey();
     const monthInput = document.getElementById('bpMonthInput');
     if (monthInput && monthInput.value !== bpSelectedMonth) monthInput.value = bpSelectedMonth;
+    renderBpMonthlySpendTable();
 
     const records = loadRecords();
     const rows = loadBudgetPlanRows(bpSelectedMonth);
     const totalCapCount = rows.reduce((s, r) => s + (Number(r.capCount) || 0), 0);
     const totalCost = rows.reduce((s, r) => s + budgetRowCost(r), 0);
-    const totalCostAmortized3 = totalCost / 3;
     const avgCpa = totalCapCount > 0 ? totalCost / totalCapCount : NaN;
+    const trailing3 = bpTrailing3MonthAdSpend(bpSelectedMonth);
+    const trailing3Label = trailing3.months.map((mk,idx)=>`${Number(mk.split('-')[1])}月:${fmtYen(trailing3.values[idx])}`).join(' ／ ');
 
     document.getElementById('bpSummaryKpis').innerHTML = `
       <div class="kpi"><div class="label">当月の上限件数（合計）</div><div class="value">${fmtNum(totalCapCount)}</div></div>
       <div class="kpi"><div class="label">概算広告費（合計）</div><div class="value accent">${fmtYen(totalCost)}</div></div>
-      <div class="kpi"><div class="label">概算広告費（3ヶ月按分・合計）</div><div class="value accent">${fmtYen(totalCostAmortized3)}</div></div>
+      <div class="kpi"><div class="label">概算広告費（3ヶ月按分）</div><div class="value accent" id="bpTrailing3Value">${fmtYen(trailing3.amortized)}</div><div class="sub" id="bpTrailing3Sub">${escapeHtml(trailing3Label)}（未入力の月は¥0として計算）</div></div>
       <div class="kpi"><div class="label">概算CPA（全体平均）</div><div class="value">${isFinite(avgCpa) ? fmtYen(avgCpa) : '—'}</div></div>
     `;
 
@@ -5778,7 +5879,7 @@
       <thead><tr>
         <th>商材</th><th>オファー</th><th>代理店</th><th>方式</th>
         <th class="num">上限件数</th><th class="num">単価/CPA(円)</th>
-        <th class="num">概算広告費</th><th class="num">概算広告費(3ヶ月按分)</th><th></th>
+        <th class="num">概算広告費</th><th></th>
       </tr></thead>
       <tbody>${rows.length ? rows.map((r,i)=>{
         const categoryOpts = ['<option value="">（選択）</option>'].concat(
@@ -5801,10 +5902,9 @@
           <td class="num"><input type="number" class="js-bp-capcount" data-i="${i}" value="${Number(r.capCount)||0}" min="0" style="width:90px;text-align:right;"></td>
           <td class="num"><input type="number" class="js-bp-unit" data-i="${i}" value="${Number(bpUnitValue(r))||0}" min="0" style="width:100px;text-align:right;"></td>
           <td class="num" id="bpCostCell${i}">${fmtYen(budgetRowCost(r))}</td>
-          <td class="num" id="bpCostAmortizedCell${i}">${fmtYen(budgetRowCostAmortized3(r))}</td>
           <td><button type="button" class="btn small danger js-bp-del" data-i="${i}">×</button></td>
         </tr>`;
-      }).join('') : emptyRow(9)}</tbody>
+      }).join('') : emptyRow(8)}</tbody>
     `;
     // 件数・単価を打っている最中にテーブル全体を作り直すとカーソル/フォーカスが
     // 飛んでしまうため、この2つの入力欄だけは「その行の概算広告費セルと上部
@@ -5816,15 +5916,13 @@
     function refreshRowCostAndSummary(i){
       const cell = document.getElementById('bpCostCell'+i);
       if (cell) cell.textContent = fmtYen(budgetRowCost(rows[i]));
-      const amortizedCell = document.getElementById('bpCostAmortizedCell'+i);
-      if (amortizedCell) amortizedCell.textContent = fmtYen(budgetRowCostAmortized3(rows[i]));
       const t = rows.reduce((s, r) => s + (Number(r.capCount) || 0), 0);
       const c = rows.reduce((s, r) => s + budgetRowCost(r), 0);
       const a = t > 0 ? c / t : NaN;
       document.getElementById('bpSummaryKpis').innerHTML = `
         <div class="kpi"><div class="label">当月の上限件数（合計）</div><div class="value">${fmtNum(t)}</div></div>
         <div class="kpi"><div class="label">概算広告費（合計）</div><div class="value accent">${fmtYen(c)}</div></div>
-        <div class="kpi"><div class="label">概算広告費（3ヶ月按分・合計）</div><div class="value accent">${fmtYen(c / 3)}</div></div>
+        <div class="kpi"><div class="label">概算広告費（3ヶ月按分）</div><div class="value accent" id="bpTrailing3Value">${fmtYen(trailing3.amortized)}</div><div class="sub" id="bpTrailing3Sub">${escapeHtml(trailing3Label)}（未入力の月は¥0として計算）</div></div>
         <div class="kpi"><div class="label">概算CPA（全体平均）</div><div class="value">${isFinite(a) ? fmtYen(a) : '—'}</div></div>
       `;
     }
@@ -5902,8 +6000,80 @@
       });
     });
 
-    document.getElementById('bpTargetsTable').innerHTML = emptyRow(3);
-    document.getElementById('bpComparisonTable').innerHTML = emptyRow(4);
+    // ---------- 目標件数と余力（商材ごと） ----------
+    // 「上限件数」は上の予算上限入力（rows）の商材別合計、「実績」は着地計算と
+    // 同じロジック（computeLanding）の現時点カウント・広告費を流用する（過去月は
+    // 月末まで確定値、当月は今日時点までの実績）。
+    const targets = loadBudgetTargetsForMonth(bpSelectedMonth);
+    const targetCategories = sortCategoriesForDisplay(Array.from(new Set(
+      bpKnownCategories(records).concat(rows.map(r=>r.category)).filter(Boolean)
+    )));
+    function persistTargets(){ saveBudgetTargetsForMonth(bpSelectedMonth, targets); }
+    function capCountForCategory(cat){ return rows.filter(r=>r.category===cat).reduce((s,r)=>s+(Number(r.capCount)||0),0); }
+    function capCostForCategory(cat){ return rows.filter(r=>r.category===cat).reduce((s,r)=>s+budgetRowCost(r),0); }
+    function warnStyle(bad){ return bad ? 'color:var(--danger);font-weight:700;' : ''; }
+
+    document.getElementById('bpTargetsTable').innerHTML = targetCategories.length ? `
+      <thead><tr>
+        <th>商材</th><th class="num">目標件数</th><th class="num">上限件数（合計）</th>
+        <th class="num">実績（現在）</th><th class="num">残件数</th><th class="num">残予算</th>
+      </tr></thead>
+      <tbody>${targetCategories.map(cat=>{
+        const cap = capCountForCategory(cat);
+        const capCost = capCostForCategory(cat);
+        const landing = computeLanding(cat, null, bpSelectedMonth);
+        const remainCount = cap - landing.count;
+        const remainBudget = capCost - landing.cost;
+        return `<tr>
+          <td>${escapeHtml(cat)}</td>
+          <td class="num"><input type="number" class="js-bp-target" data-cat="${escapeHtml(cat)}" value="${Number(targets[cat])||0}" min="0" style="width:90px;text-align:right;"></td>
+          <td class="num">${fmtNum(cap)}</td>
+          <td class="num">${fmtNum(Math.round(landing.count))}</td>
+          <td class="num" style="${warnStyle(remainCount<0)}">${remainCount<0?'⚠ ':''}${fmtNum(Math.round(remainCount))}</td>
+          <td class="num" style="${warnStyle(remainBudget<0)}">${remainBudget<0?'⚠ ':''}${fmtYen(remainBudget)}</td>
+        </tr>`;
+      }).join('')}</tbody>
+    ` : emptyRow(6);
+    document.querySelectorAll('.js-bp-target').forEach(inp=>{
+      let t=null;
+      function commit(){
+        targets[inp.dataset.cat] = Number(inp.value) || 0;
+        persistTargets();
+      }
+      inp.addEventListener('input', ()=>{ clearTimeout(t); t=setTimeout(commit, 500); });
+      inp.addEventListener('change', ()=>{ clearTimeout(t); commit(); renderBudgetTab(); });
+    });
+
+    // ---------- 予実比較・着地（商材ごと） ----------
+    // 目標広告費は「目標件数 × 上限入力から算出した商材の平均単価」で概算する。
+    // 着地見込みはダッシュボードの着地想定と同じ computeLanding() を使う。
+    document.getElementById('bpComparisonTable').innerHTML = targetCategories.length ? `
+      <thead><tr>
+        <th>商材</th><th class="num">目標件数</th><th class="num">目標広告費</th>
+        <th class="num">実績件数（現在）</th><th class="num">着地見込み件数</th>
+        <th class="num">着地見込み広告費</th><th class="num">差分（件数）</th><th class="num">差分（広告費）</th>
+      </tr></thead>
+      <tbody>${targetCategories.map(cat=>{
+        const target = Number(targets[cat]) || 0;
+        const cap = capCountForCategory(cat);
+        const capCost = capCostForCategory(cat);
+        const avgUnit = cap > 0 ? capCost / cap : 0;
+        const targetCost = target * avgUnit;
+        const landing = computeLanding(cat, null, bpSelectedMonth);
+        const diffCount = landing.landingCount - target;
+        const diffCost = landing.landingCost - targetCost;
+        return `<tr>
+          <td>${escapeHtml(cat)}</td>
+          <td class="num">${fmtNum(target)}</td>
+          <td class="num">${targetCost>0?fmtYen(targetCost):'—'}</td>
+          <td class="num">${fmtNum(Math.round(landing.count))}</td>
+          <td class="num">${fmtNum(Math.round(landing.landingCount))}</td>
+          <td class="num">${landing.landingCost>0?fmtYen(landing.landingCost):'—'}</td>
+          <td class="num" style="${warnStyle(diffCount<0)}">${diffCount>=0?'+':''}${fmtNum(Math.round(diffCount))}</td>
+          <td class="num" style="${warnStyle(diffCost>0)}">${diffCost>=0?'+':''}${fmtYen(diffCost)}</td>
+        </tr>`;
+      }).join('')}</tbody>
+    ` : emptyRow(8);
   }
 
   // ---------- invoices tab ----------
@@ -6804,6 +6974,15 @@
     if (!e.target.value) return;
     bpSelectedMonth = e.target.value;
     renderBudgetTab();
+  });
+  document.getElementById('bpSpendAddBtn').addEventListener('click', ()=>{
+    const m = document.getElementById('bpSpendAddMonth').value;
+    if (!m){ alert('年月を選択してください。'); return; }
+    const cur = loadMonthlyAdSpend();
+    if (!(m in cur)){ cur[m] = 0; saveMonthlyAdSpend(cur); }
+    document.getElementById('bpSpendAddMonth').value = '';
+    renderBpMonthlySpendTable();
+    refreshTrailing3Kpi();
   });
   document.getElementById('invoiceDriveMonthAddBtn').addEventListener('click', ()=>{
     const m = document.getElementById('invoiceDriveMonthAdd').value;
