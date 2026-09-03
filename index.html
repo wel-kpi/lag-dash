@@ -689,8 +689,13 @@
     <div class="grid-kpi" id="bpSummaryKpis"></div>
     <div class="panel">
       <h2>予算上限の入力<span class="n">（商材・オファー・代理店ごと）</span></h2>
-      <div class="note-box">次のステップで、ここに入力テーブル（上限件数・計算方式（成果単価／平均CPA）・単価）を実装します。</div>
+      <div class="note-box">
+        実績データとは連動しない、事前の入力枠です。方式Aは「上限件数 × 成果単価」、方式Bは「上限件数 × 平均CPA」で概算広告費を計算します。
+      </div>
       <div class="table-wrap"><table class="data" id="bpRowsTable"></table></div>
+      <div class="controls" style="margin-top:8px;">
+        <button type="button" class="btn small" id="bpRowsAddBtn">＋ 行を追加</button>
+      </div>
     </div>
     <div class="panel">
       <h2>目標件数と余力<span class="n">（商材ごと）</span></h2>
@@ -898,7 +903,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.13.0";
+  const APP_VERSION = "4.14.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -5692,12 +5697,34 @@
 
   let bpSelectedMonth = null; // null = 初回表示時に当月を使う
 
-  // ステップ1時点では、入力された行から集計するだけの最小限の表示。
+  // 方式（パターンA/B）に応じて、どちらのフィールドを「単価/CPA」欄として
+  // 読み書きするかを切り替える（両方の値自体は行に保持しておき、方式を
+  // 行き来しても入力し直さずに済むようにする）。
+  function bpUnitValue(row){ return row.mode === 'budget' ? row.avgCpa : row.unitCost; }
+  function bpSetUnitValue(row, val){ if (row.mode === 'budget') row.avgCpa = val; else row.unitCost = val; }
+
+  // 商材・オファー・代理店は、実績データに実在するもの一覧をプルダウン／候補
+  // として使う（本来の目的である「実績とは関係なく事前に予算だけ入力する」
+  // ことも妨げないよう、商材以外は自由入力も許容している＝プルダウンに無い
+  // 新しいオファー・代理店もそのまま手入力できる）。
+  function bpKnownCategories(records){
+    return sortCategoriesForDisplay(uniqueSorted(records.map(r=>r.category)));
+  }
+  function bpKnownOffersFor(records, category){
+    if (!category) return [];
+    const groups = uniqueSorted(records.filter(r=>r.category===category && r.group).map(r=>r.group));
+    return uniqueSorted(groups.map(g=>resolveOffer(category, g)));
+  }
+  function bpKnownAgencies(records){
+    return uniqueSorted(records.map(r=>r.agency).filter(Boolean));
+  }
+
   function renderBudgetTab(){
     if (!bpSelectedMonth) bpSelectedMonth = currentMonthKey();
     const monthInput = document.getElementById('bpMonthInput');
     if (monthInput && monthInput.value !== bpSelectedMonth) monthInput.value = bpSelectedMonth;
 
+    const records = loadRecords();
     const rows = loadBudgetPlanRows(bpSelectedMonth);
     const totalCapCount = rows.reduce((s, r) => s + (Number(r.capCount) || 0), 0);
     const totalCost = rows.reduce((s, r) => s + budgetRowCost(r), 0);
@@ -5709,17 +5736,129 @@
       <div class="kpi"><div class="label">概算CPA（全体平均）</div><div class="value">${isFinite(avgCpa) ? fmtYen(avgCpa) : '—'}</div></div>
     `;
 
+    function persistRows(){ saveBudgetPlanRows(bpSelectedMonth, rows); }
+
+    const agencyOptions = bpKnownAgencies(records).map(a=>`<option value="${escapeHtml(a)}">`).join('');
+
     document.getElementById('bpRowsTable').innerHTML = `
-      <thead><tr><th>商材</th><th>オファー</th><th>代理店</th><th>方式</th><th class="num">上限件数</th><th class="num">概算広告費</th></tr></thead>
-      <tbody>${rows.length ? rows.map(r => `<tr>
-        <td style="text-align:left;">${escapeHtml(r.category)}</td>
-        <td style="text-align:left;">${escapeHtml(r.offer)}</td>
-        <td style="text-align:left;">${escapeHtml(r.agency)}</td>
-        <td style="text-align:left;">${r.mode === 'budget' ? 'B: 予算運用(平均CPA)' : 'A: アフィリエイト(成果単価)'}</td>
-        <td class="num">${fmtNum(r.capCount)}</td>
-        <td class="num">${fmtYen(budgetRowCost(r))}</td>
-      </tr>`).join('') : emptyRow(6)}</tbody>
+      <datalist id="bpAgencyList">${agencyOptions}</datalist>
+      <thead><tr>
+        <th>商材</th><th>オファー</th><th>代理店</th><th>方式</th>
+        <th class="num">上限件数</th><th class="num">単価/CPA(円)</th>
+        <th class="num">概算広告費</th><th></th>
+      </tr></thead>
+      <tbody>${rows.length ? rows.map((r,i)=>{
+        const categoryOpts = ['<option value="">（選択）</option>'].concat(
+          bpKnownCategories(records).map(c=>`<option value="${escapeHtml(c)}" ${c===r.category?'selected':''}>${escapeHtml(c)}</option>`)
+        ).join('');
+        const offers = bpKnownOffersFor(records, r.category);
+        const offerOpts = ['<option value="">（すべて／指定なし）</option>'].concat(
+          offers.map(o=>`<option value="${escapeHtml(o)}" ${o===r.offer?'selected':''}>${escapeHtml(o)}</option>`)
+        ).join('');
+        return `<tr data-i="${i}">
+          <td><select class="js-bp-category" data-i="${i}">${categoryOpts}</select></td>
+          <td><select class="js-bp-offer" data-i="${i}">${offerOpts}</select></td>
+          <td><input type="text" class="js-bp-agency" data-i="${i}" list="bpAgencyList" value="${escapeHtml(r.agency)}" style="width:120px;"></td>
+          <td>
+            <select class="js-bp-mode" data-i="${i}">
+              <option value="affiliate" ${r.mode==='affiliate'?'selected':''}>A: アフィリエイト(成果単価)</option>
+              <option value="budget" ${r.mode==='budget'?'selected':''}>B: 予算運用(平均CPA)</option>
+            </select>
+          </td>
+          <td class="num"><input type="number" class="js-bp-capcount" data-i="${i}" value="${Number(r.capCount)||0}" min="0" style="width:90px;text-align:right;"></td>
+          <td class="num"><input type="number" class="js-bp-unit" data-i="${i}" value="${Number(bpUnitValue(r))||0}" min="0" style="width:100px;text-align:right;"></td>
+          <td class="num" id="bpCostCell${i}">${fmtYen(budgetRowCost(r))}</td>
+          <td><button type="button" class="btn small danger js-bp-del" data-i="${i}">×</button></td>
+        </tr>`;
+      }).join('') : emptyRow(8)}</tbody>
     `;
+    // 件数・単価を打っている最中にテーブル全体を作り直すとカーソル/フォーカスが
+    // 飛んでしまうため、この2つの入力欄だけは「その行の概算広告費セルと上部
+    // サマリーだけをその場で更新し、保存は少し待ってから」という軽い更新に
+    // する（他の欄はプルダウンや商材変更でオファー選択肢が変わるなど、どのみち
+    // 作り直しが必要なものだけ再描画する）。
+    let bpSaveTimer = null;
+    function scheduleSave(){ clearTimeout(bpSaveTimer); bpSaveTimer = setTimeout(persistRows, 500); }
+    function refreshRowCostAndSummary(i){
+      const cell = document.getElementById('bpCostCell'+i);
+      if (cell) cell.textContent = fmtYen(budgetRowCost(rows[i]));
+      const t = rows.reduce((s, r) => s + (Number(r.capCount) || 0), 0);
+      const c = rows.reduce((s, r) => s + budgetRowCost(r), 0);
+      const a = t > 0 ? c / t : NaN;
+      document.getElementById('bpSummaryKpis').innerHTML = `
+        <div class="kpi"><div class="label">当月の上限件数（合計）</div><div class="value">${fmtNum(t)}</div></div>
+        <div class="kpi"><div class="label">概算広告費（合計）</div><div class="value accent">${fmtYen(c)}</div></div>
+        <div class="kpi"><div class="label">概算CPA（全体平均）</div><div class="value">${isFinite(a) ? fmtYen(a) : '—'}</div></div>
+      `;
+    }
+    document.getElementById('bpRowsAddBtn').onclick = ()=>{
+      rows.push(defaultBudgetRow());
+      persistRows();
+      renderBudgetTab();
+    };
+    document.querySelectorAll('.js-bp-category').forEach(sel=>{
+      sel.addEventListener('change', ()=>{
+        const r = rows[Number(sel.dataset.i)];
+        r.category = sel.value;
+        r.offer = ''; // 商材を変えたらオファーの選択はリセットする
+        r.updatedAt = new Date().toISOString();
+        persistRows();
+        renderBudgetTab();
+      });
+    });
+    document.querySelectorAll('.js-bp-offer').forEach(sel=>{
+      sel.addEventListener('change', ()=>{
+        const r = rows[Number(sel.dataset.i)];
+        r.offer = sel.value;
+        r.updatedAt = new Date().toISOString();
+        persistRows();
+      });
+    });
+    document.querySelectorAll('.js-bp-agency').forEach(inp=>{
+      let t=null;
+      function commit(){
+        const r = rows[Number(inp.dataset.i)];
+        r.agency = inp.value.trim();
+        r.updatedAt = new Date().toISOString();
+        persistRows();
+      }
+      inp.addEventListener('input', ()=>{ clearTimeout(t); t=setTimeout(commit, 500); });
+      inp.addEventListener('change', ()=>{ clearTimeout(t); commit(); });
+    });
+    document.querySelectorAll('.js-bp-mode').forEach(sel=>{
+      sel.addEventListener('change', ()=>{
+        const r = rows[Number(sel.dataset.i)];
+        r.mode = sel.value;
+        r.updatedAt = new Date().toISOString();
+        persistRows();
+        renderBudgetTab();
+      });
+    });
+    document.querySelectorAll('.js-bp-capcount').forEach(inp=>{
+      inp.addEventListener('input', ()=>{
+        const i = Number(inp.dataset.i);
+        rows[i].capCount = Number(inp.value) || 0;
+        rows[i].updatedAt = new Date().toISOString();
+        refreshRowCostAndSummary(i);
+        scheduleSave();
+      });
+    });
+    document.querySelectorAll('.js-bp-unit').forEach(inp=>{
+      inp.addEventListener('input', ()=>{
+        const i = Number(inp.dataset.i);
+        bpSetUnitValue(rows[i], Number(inp.value) || 0);
+        rows[i].updatedAt = new Date().toISOString();
+        refreshRowCostAndSummary(i);
+        scheduleSave();
+      });
+    });
+    document.querySelectorAll('.js-bp-del').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        rows.splice(Number(btn.dataset.i), 1);
+        persistRows();
+        renderBudgetTab();
+      });
+    });
 
     document.getElementById('bpTargetsTable').innerHTML = emptyRow(3);
     document.getElementById('bpComparisonTable').innerHTML = emptyRow(4);
