@@ -903,7 +903,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.14.0";
+  const APP_VERSION = "4.15.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -5719,6 +5719,33 @@
     return uniqueSorted(records.map(r=>r.agency).filter(Boolean));
   }
 
+  // 商材・オファー・代理店が確定した行について、広告費設定（コスト設定タブ）
+  // に登録済みの成果単価を探す。同じ商材・オファー・代理店の組み合わせでも
+  // 広告URLグループが複数あり得るため、実績件数が最も多いグループの値を採用する。
+  // ここで見つけた値は行の初期値としてコピーするだけで、広告費設定側のマスタ
+  // データは一切変更しない（この後の手動修正も予算管理タブ内に閉じる）。
+  function bpLookupAffiliateUnitCost(records, category, offer, agency){
+    if (!category || !offer || !agency) return null;
+    const settings = ensureGroupSettingsForRecords(records);
+    const counts = new Map(); // unitCost -> 一致した実績件数
+    records.forEach(r=>{
+      if (r.category !== category || r.agency !== agency) return;
+      if (resolveOffer(category, r.group) !== offer) return;
+      const s = settings[r.group];
+      if (!s || s.type !== 'affiliate' || !s.unitCost) return;
+      counts.set(s.unitCost, (counts.get(s.unitCost) || 0) + 1);
+    });
+    if (!counts.size) return null;
+    let best = null, bestCount = -1;
+    counts.forEach((count, unitCost)=>{ if (count > bestCount){ best = unitCost; bestCount = count; } });
+    return best;
+  }
+  function bpAutofillUnitCost(row, records){
+    if (row.mode !== 'affiliate') return;
+    const found = bpLookupAffiliateUnitCost(records, row.category, row.offer, row.agency);
+    if (found != null) row.unitCost = found;
+  }
+
   function renderBudgetTab(){
     if (!bpSelectedMonth) bpSelectedMonth = currentMonthKey();
     const monthInput = document.getElementById('bpMonthInput');
@@ -5801,6 +5828,7 @@
         const r = rows[Number(sel.dataset.i)];
         r.category = sel.value;
         r.offer = ''; // 商材を変えたらオファーの選択はリセットする
+        bpAutofillUnitCost(r, records);
         r.updatedAt = new Date().toISOString();
         persistRows();
         renderBudgetTab();
@@ -5810,8 +5838,10 @@
       sel.addEventListener('change', ()=>{
         const r = rows[Number(sel.dataset.i)];
         r.offer = sel.value;
+        bpAutofillUnitCost(r, records);
         r.updatedAt = new Date().toISOString();
         persistRows();
+        renderBudgetTab();
       });
     });
     document.querySelectorAll('.js-bp-agency').forEach(inp=>{
@@ -5819,16 +5849,18 @@
       function commit(){
         const r = rows[Number(inp.dataset.i)];
         r.agency = inp.value.trim();
+        bpAutofillUnitCost(r, records);
         r.updatedAt = new Date().toISOString();
         persistRows();
       }
       inp.addEventListener('input', ()=>{ clearTimeout(t); t=setTimeout(commit, 500); });
-      inp.addEventListener('change', ()=>{ clearTimeout(t); commit(); });
+      inp.addEventListener('change', ()=>{ clearTimeout(t); commit(); renderBudgetTab(); });
     });
     document.querySelectorAll('.js-bp-mode').forEach(sel=>{
       sel.addEventListener('change', ()=>{
         const r = rows[Number(sel.dataset.i)];
         r.mode = sel.value;
+        bpAutofillUnitCost(r, records);
         r.updatedAt = new Date().toISOString();
         persistRows();
         renderBudgetTab();
