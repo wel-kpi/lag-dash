@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
@@ -680,8 +680,9 @@
   <!-- INVOICES -->
   <section id="tab-invoices" style="display:none;">
     <div class="note-box">
-      PDFを選択すると、テキストを自動解析して「取引先・対象年月・金額」を仮入力します。請求書のフォーマットは発行元によって異なるため、<strong>必ず内容を確認してから保存してください</strong>。取引先名を手直しして保存すると、次回以降は同じ発行元のPDFで自動的に使われるようになります（学習内容は他の端末とも共有されます）。<br>
-      請求書は基本的にまるごと1つの分類（原価／固定費・変動費／広告費）に振り分けますが、<strong>SUPER STUDIO・共栄物流</strong>の請求書、または複数の項目（別ブランド分など）が含まれると判断された請求書は、明細ごとに分解して仮入力します。各項目には「計上する」チェックがあり、<strong>チェックを入れたものだけ保存されます</strong>（項目名・金額・分類はそれぞれ個別に修正できます。分類が未指定の項目は全体設定を引き継ぎます）。<br>
+      PDFを選択すると、テキストを自動解析して「取引先・対象年月・金額」を仮入力します。ファイル名が「会社名_YYYYMM」の形式になっている場合はそちらを優先します。請求書のフォーマットは発行元によって異なるため、<strong>必ず内容を確認してから保存してください</strong>。取引先名を手直しして保存すると、次回以降は同じ発行元のPDFで自動的に使われるようになります（学習内容は他の端末とも共有されます）。<br>
+      金額は基本的に<strong>税抜き</strong>で読み取ります（内税表示しかない場合は自動で税抜きに換算します）。<br>
+      請求書は基本的にまるごと1つの分類（原価／固定費・変動費／広告費）に振り分けますが、<strong>SUPER STUDIO・共栄物流</strong>の請求書、または品目が複数見つかった請求書（別ブランド分が混在している場合など）は、品目ごとに分解して仮入力します。各項目には「計上する」チェックがあり（<strong>デフォルトは全て未チェック</strong>）、<strong>チェックを入れたものだけ保存されます</strong>（項目名・金額・分類はそれぞれ個別に修正できます。分類が未指定の項目は全体設定を引き継ぎます）。<br>
       PDFファイル自体はこのツールには保存されません。Google Driveにアップロードしたら、下の読み取り履歴で月ごとにフォルダリンクを保存しておくと、みんなが辿れます。
     </div>
     <div class="panel">
@@ -861,7 +862,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.8.0";
+  const APP_VERSION = "4.9.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -5656,10 +5657,20 @@
         const y = Math.round(item.transform[5]);
         const key = p + '_' + y;
         if (!rowMap[key]) rowMap[key] = { y, parts: [] };
-        rowMap[key].parts.push(item.str);
+        // x座標・幅も持っておき、後で横方向の隙間から単語の区切り（スペース）
+        // を復元する（列が離れているのに文字だけ連結されて数字が誤って
+        // くっついてしまうのを防ぐため）。
+        rowMap[key].parts.push({ x: item.transform[4], w: item.width || 0, str: item.str });
       });
       Object.values(rowMap).sort((a,b)=> b.y - a.y).forEach(row=>{
-        const text = row.parts.join('');
+        const sorted = row.parts.slice().sort((a,b)=> a.x - b.x);
+        let text = '';
+        let prevEnd = null;
+        sorted.forEach(part=>{
+          if (prevEnd !== null && part.x - prevEnd > 2 && !text.endsWith(' ') && !part.str.startsWith(' ')) text += ' ';
+          text += part.str;
+          prevEnd = part.x + part.w;
+        });
         if (text.trim()) lines.push({ page: p, text });
         fullText += text + '\n';
       });
@@ -5675,18 +5686,25 @@
     const n = Number(cleaned);
     return isNaN(n) || n === 0 ? null : n;
   }
-  // 「ご請求金額」等のラベル直後の金額を優先し、無ければ本文中で一番大きい
-  // ¥金額を合計額とみなす（多くの請求書で合計が最大の金額になるため）。
+  // 金額は基本的に税抜きで扱いたいので「税抜金額」「小計」等のラベルを最優先で
+  // 探す。見つからない場合だけ「ご請求金額」等の税込ラベルから10%として逆算
+  // する（内税表示のみで税抜金額が書かれていない請求書向けのフォールバック）。
   function guessInvoiceAmount(text){
     const norm = zenkakuToHankaku(text);
-    const labels = ['ご請求金額','御請求金額','請求金額合計','ご請求額','お支払い金額','合計金額','請求金額'];
-    for (const label of labels){
-      const re = new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g,'\\$&') + '[^0-9¥]{0,12}(¥?[0-9,]{2,})');
+    const exTaxLabels = ['税抜金額','税抜合計金額','税抜合計','小計'];
+    for (const label of exTaxLabels){
+      const re = new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g,'\\$&') + '[^0-9¥]{0,6}(¥?[0-9,]{2,})');
       const m = norm.match(re);
       if (m){ const v = parseYenAmount(m[1]); if (v) return v; }
     }
+    const inclusiveLabels = ['ご請求金額','御請求金額','請求金額合計','ご請求額','お支払い金額','合計金額','請求金額'];
+    for (const label of inclusiveLabels){
+      const re = new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g,'\\$&') + '[^0-9¥]{0,6}(¥?[0-9,]{2,})');
+      const m = norm.match(re);
+      if (m){ const v = parseYenAmount(m[1]); if (v) return Math.round(v / 1.1); }
+    }
     const all = [...norm.matchAll(/¥\s?([0-9,]{3,})/g)].map(m=>parseYenAmount(m[1])).filter(Boolean);
-    if (all.length) return Math.max(...all);
+    if (all.length) return Math.round(Math.max(...all) / 1.1);
     return 0;
   }
   function guessInvoiceMonth(text){
@@ -5743,31 +5761,53 @@
   function guessInvoiceVendor(text, fileName, rules){
     return matchKnownVendor(text) || matchLearnedVendor(text, fileName||'', rules||[]) || matchGenericVendorPattern(text) || '';
   }
+  // 「会社名_YYYYMM」「会社名_YYYYMMDD」のようなファイル名の命名ルールを使って
+  // いるケースが多いため、これに合致する場合は本文の解析結果より優先して
+  // 会社名・対象年月を採用する（本文はレイアウトが発行元ごとにバラバラで
+  // 崩れやすいのに対し、ファイル名の命名ルールは毎回一定で信頼できるため）。
+  function parseFilenameHint(fileName){
+    const base = String(fileName||'').replace(/\.pdf$/i, '').trim();
+    const m = base.match(/^(.+?)[_\-\s]+(\d{4})(\d{2})(\d{2})?$/);
+    if (!m) return null;
+    const vendor = m[1].trim();
+    if (!vendor) return null;
+    const mo = Number(m[3]);
+    if (mo < 1 || mo > 12) return null;
+    return { vendor, month: `${m[2]}-${m[3]}` };
+  }
   function isLineItemVendor(vendor, text){
     const t = (String(vendor) + ' ' + String(text)).toUpperCase();
     return LINE_ITEM_VENDORS.some(v => t.includes(v.toUpperCase()));
   }
   // SUPER STUDIO・共栄物流のように性質の異なる項目が混在する請求書だけでなく、
   // 別ブランド分の金額が混ざっている請求書などでも使えるよう、常にPDF全体から
-  // 行ごとの明細候補を抽出しておく（実際に項目ごとに分けて登録するかどうかは
-  // ドラフト側でチェックボックスにより判断する）。行ごとに末尾の金額を拾い、
-  // 「合計」「小計」などの集計行は明細ではないので除外する。項目名はその行から
-  // 金額部分を除いた残りのテキストとする。分類は初期状態では未指定（＝全体設定
-  // を引き継ぐ）。
-  function extractLineItems(lines){
+  // 行ごとの明細候補（＝品目欄の各行）を抽出しておく（実際に項目ごとに分けて
+  // 登録するかどうかはドラフト側でチェックボックスにより判断する）。行ごとに
+  // 末尾の金額を拾い、「合計」「小計」などの集計行・振込先/登録番号/電話番号
+  // などの行は明細ではないので除外する。項目名はその行から金額部分を除いた
+  // 残りのテキストとする。分類は初期状態では未指定（＝全体設定を引き継ぐ）。
+  const LINE_ITEM_EXCLUDE_RE = /合計|小計|消費税|残高|割引|ページ|請求|税抜|税込|振込|備考|手数料|口座|登録番号|TEL|FAX|〒|銀行|支店|[%％]/i;
+  function extractLineItems(lines, taxInclusive){
     const items = [];
     (lines || []).forEach(({ text })=>{
-      if (/合計|小計|消費税|残高|割引|ページ|請求/.test(text)) return;
+      if (LINE_ITEM_EXCLUDE_RE.test(text)) return;
       const norm = zenkakuToHankaku(text);
       const m = norm.match(/(¥?[0-9,]{3,})\s*円?\s*$/);
       if (!m) return;
-      const amt = parseYenAmount(m[1]);
+      // 電話番号・郵便番号・銀行口座番号・登録番号など、カンマ区切りされていない
+      // 4桁以上の数字の並びは金額ではない可能性が高いので除外する（実際の金額は
+      // 日本語表記なら4桁以上は必ずカンマ区切りになるため）。
+      const rawDigits = m[1].replace(/[¥,]/g, '');
+      if (rawDigits.length >= 4 && !m[1].includes(',')) return;
+      let amt = parseYenAmount(m[1]);
       if (!amt) return;
+      if (taxInclusive) amt = Math.round(amt / 1.1);
       const label = text.slice(0, text.length - m[0].length).trim() || '(項目名不明)';
-      items.push({ id: Date.now() + '-' + Math.random().toString(36).slice(2, 8) + '-' + items.length, label, amount: amt, category: '', checked: true });
+      items.push({ id: Date.now() + '-' + Math.random().toString(36).slice(2, 8) + '-' + items.length, label, amount: amt, category: '', checked: false });
     });
     return items;
   }
+  function isTaxInclusiveText(text){ return /内税/.test(text); }
 
   let invoiceDraft = null;
   let invoiceMonthFilter = '';
@@ -5779,14 +5819,18 @@
       const buf = await file.arrayBuffer();
       const { text, lines } = await extractPdfText(buf);
       const rules = loadInvoiceVendorRules();
-      const guessedVendor = guessInvoiceVendor(text, file.name, rules);
+      // ファイル名が「会社名_YYYYMM」のような命名ルールに沿っている場合は、
+      // 崩れやすい本文レイアウトの解析結果よりそちらを優先する。
+      const filenameHint = parseFilenameHint(file.name);
+      const guessedVendor = (filenameHint && filenameHint.vendor) || guessInvoiceVendor(text, file.name, rules);
       const vendor = guessedVendor || file.name.replace(/\.pdf$/i, '');
-      const month = guessInvoiceMonth(text);
+      const month = (filenameHint && filenameHint.month) || guessInvoiceMonth(text);
+      const taxInclusive = isTaxInclusiveText(text);
       // 別ブランド分の金額が混ざっている請求書などにも対応できるよう、常に
       // 明細候補を抽出しておく。実際に項目ごとに分けて登録するかは、
       // SUPER STUDIO・共栄物流の場合、または明細候補が2件以上見つかった場合に
       // デフォルトでON（それ以外は普段どおり合計金額1本のまま）。
-      const lineItems = extractLineItems(lines);
+      const lineItems = extractLineItems(lines, taxInclusive);
       const hasLineItems = isLineItemVendor(vendor, text) || lineItems.length > 1;
       const amount = hasLineItems ? 0 : guessInvoiceAmount(text);
       invoiceDraft = {
