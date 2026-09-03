@@ -319,6 +319,7 @@
     <button data-tab="ltv">💹 収益シミュレーション</button>
     <button data-tab="cost">💰 広告費設定</button>
     <button data-tab="budget">🎯 予算管理</button>
+    <button data-tab="annualplan">🗓️ 年間計画</button>
     <button data-tab="invoices">🧾 請求書</button>
     <button data-tab="manage">📁 データ管理</button>
   </nav>
@@ -715,6 +716,22 @@
     </div>
   </section>
 
+  <!-- ANNUAL PLAN -->
+  <section id="tab-annualplan" style="display:none;">
+    <div class="note-box">
+      月ごとの売上・原価・広告費・利益を、商材×オファーの継続率シミュレーション（収益シミュレーションタブと同じロジック）を積み上げて計算する年間計画です。獲得実績がある月（当月まで）は実績を、それより先の月は「予算管理」タブに入力した上限件数・概算広告費を新規獲得の仮定として使います。継続率・単価・原価は「収益シミュレーション」タブの設定を使うため、精度を上げたい場合はそちらを調整してください。<br>
+      <strong>Phase 1の制限：</strong> 表示開始月より前に獲得した既存顧客の継続売上は、開始月からさかのぼれる範囲（開始月の24ヶ月前まで）の実績データがある分だけ考慮しています。それより古い獲得分の継続売上は含まれません。
+    </div>
+    <div class="controls">
+      <label>表示開始月 <input type="month" id="apStartMonthInput"></label>
+    </div>
+    <div class="grid-kpi" id="apSummaryKpis"></div>
+    <div class="panel">
+      <h2>月次損益<span class="n">（商材ごと・24ヶ月分）</span></h2>
+      <div class="table-wrap"><table class="data" id="apPlanTable"></table></div>
+    </div>
+  </section>
+
   <!-- INVOICES -->
   <section id="tab-invoices" style="display:none;">
     <div class="note-box">
@@ -909,7 +926,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.18.0";
+  const APP_VERSION = "4.19.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -6057,6 +6074,166 @@
     wireTargetInput('.js-bp-target-cpa', (entry, val)=>{ entry.cpa = val; });
   }
 
+  // ---------- annual plan (年間計画) ----------
+  // 収益シミュレーション（LTV）タブと同じ継続率シミュレーション（simulateLTV）を、
+  // 商材・オファーごとに獲得月をずらしながら走らせ、各コホートの月次売上・原価・
+  // 広告費・利益を実際のカレンダー月に積み上げることで、年間の月次損益を再現する。
+  // 新規獲得件数は、当月までは実績（computeLandingSplit/computeLanding）、それより
+  // 先の月は「予算管理」タブの上限件数・概算広告費を仮定として使う。
+  const AP_MONTHS_TO_SHOW = 24;
+  const AP_LOOKBACK_MONTHS = 24; // 表示開始月より前に獲得した既存顧客の継続売上も拾うための遡り幅
+
+  function annualPlanOffersForCategory(category, records){
+    const groups = uniqueSorted(records.filter(r=>r.category===category && r.group).map(r=>r.group));
+    const fromRecords = uniqueSorted(groups.map(g=>resolveOffer(category, g)));
+    const plan = loadBudgetPlan();
+    const fromBudget = new Set();
+    Object.values(plan).forEach(p=>{
+      (p.rows||[]).forEach(r=>{ if (r.category===category && r.offer) fromBudget.add(r.offer); });
+    });
+    return uniqueSorted(Array.from(new Set(fromRecords.concat(Array.from(fromBudget)))));
+  }
+
+  // その商材・オファーの、ある獲得月における新規獲得件数と獲得コスト。
+  // 当月までは実績（着地想定と同じロジック）、未来の月は予算管理タブの入力値を使う。
+  function annualPlanAcquisitionForMonth(category, offer, monthKey){
+    if (monthKey <= currentMonthKey()){
+      const split = computeLandingSplit(category, offer, monthKey);
+      const landingInfo = computeLanding(category, offer, monthKey);
+      return { front: split.frontCount, upsell: split.upsellCount, adCost: landingInfo.cost };
+    }
+    const planRows = loadBudgetPlanRows(monthKey).filter(r=>r.category===category && (!offer || r.offer===offer));
+    const front = planRows.reduce((s,r)=>s+(Number(r.capCount)||0),0);
+    const adCost = planRows.reduce((s,r)=>s+budgetRowCost(r),0);
+    return { front, upsell: 0, adCost };
+  }
+
+  // displayMonths内の各商材×月について、新規件数・売上（新規/既存）・原価・広告費・
+  // 利益を集計する。獲得月は displayMonths[0] の AP_LOOKBACK_MONTHS ヶ月前まで遡って
+  // シミュレーションする（それより前に獲得したコホートの継続売上は含まれない＝Phase 1の制限）。
+  function buildAnnualPlan(displayMonths, categories){
+    const records = loadRecords();
+    const cells = {};
+    function cell(category, monthKey){
+      const k = category+'|'+monthKey;
+      if (!cells[k]) cells[k] = { newFront:0, newUpsell:0, orders:0, revenue:0, newRevenue:0, existingRevenue:0, cogs:0, adCost:0, otherCost:0, profit:0 };
+      return cells[k];
+    }
+    if (!displayMonths.length) return cells;
+    const acquisitionEnd = displayMonths[displayMonths.length - 1];
+    const acquisitionMonths = [];
+    for (let mk = shiftMonthKey(displayMonths[0], -AP_LOOKBACK_MONTHS); mk <= acquisitionEnd; mk = shiftMonthKey(mk, 1)){
+      acquisitionMonths.push(mk);
+    }
+
+    categories.forEach(category=>{
+      annualPlanOffersForCategory(category, records).forEach(offer=>{
+        acquisitionMonths.forEach(acqMonth=>{
+          const acq = annualPlanAcquisitionForMonth(category, offer, acqMonth);
+          if (acq.front<=0 && acq.upsell<=0 && acq.adCost<=0) return;
+          const sim = simulateLTV(category, acq.front, acq.upsell, acq.adCost, offer, acqMonth);
+          sim.rows.forEach(r=>{
+            if (r.orders<=0 && r.adCost<=0 && r.otherCost<=0) return;
+            const calMonth = shiftMonthKey(acqMonth, r.month - 1);
+            const c = cell(category, calMonth);
+            c.orders += r.orders;
+            c.revenue += r.revenue;
+            c.cogs += r.cogs;
+            c.adCost += r.adCost;
+            c.otherCost += r.otherCost;
+            c.profit += r.profit;
+            if (r.month === 1){ c.newFront += r.frontCount; c.newUpsell += r.upsellCount; c.newRevenue += r.revenue; }
+            else { c.existingRevenue += r.revenue; }
+          });
+        });
+      });
+    });
+    return cells;
+  }
+
+  let apSelectedStartMonth = null;
+  function apDefaultStartMonth(records){
+    const months = records.map(r=>r.month).filter(Boolean).sort();
+    return months.length ? months[0] : shiftMonthKey(currentMonthKey(), -6);
+  }
+
+  function renderAnnualPlanTab(){
+    const records = loadRecords();
+    if (!apSelectedStartMonth) apSelectedStartMonth = apDefaultStartMonth(records);
+    const startInput = document.getElementById('apStartMonthInput');
+    if (startInput && startInput.value !== apSelectedStartMonth) startInput.value = apSelectedStartMonth;
+
+    const displayMonths = [];
+    for (let i=0, mk=apSelectedStartMonth; i<AP_MONTHS_TO_SHOW; i++, mk=shiftMonthKey(mk,1)) displayMonths.push(mk);
+
+    const categories = bpKnownCategories(records);
+    const cells = buildAnnualPlan(displayMonths, categories);
+
+    function totalsForMonth(monthKey){
+      const t = { newFront:0, newUpsell:0, orders:0, revenue:0, newRevenue:0, existingRevenue:0, cogs:0, adCost:0, otherCost:0, profit:0 };
+      categories.forEach(cat=>{
+        const c = cells[cat+'|'+monthKey];
+        if (!c) return;
+        Object.keys(t).forEach(k=>{ t[k]+=c[k]; });
+      });
+      return t;
+    }
+
+    // ---- サマリーKPI（表示期間の合計） ----
+    let sumRevenue=0, sumAdCost=0, sumProfit=0, sumNewFront=0;
+    displayMonths.forEach(mk=>{
+      const t = totalsForMonth(mk);
+      sumRevenue+=t.revenue; sumAdCost+=t.adCost; sumProfit+=t.profit; sumNewFront+=t.newFront;
+    });
+    const profitRate = sumRevenue>0 ? (sumProfit/sumRevenue*100) : NaN;
+    document.getElementById('apSummaryKpis').innerHTML = `
+      <div class="kpi"><div class="label">期間合計 売上</div><div class="value accent">${fmtYen(sumRevenue)}</div></div>
+      <div class="kpi"><div class="label">期間合計 利益</div><div class="value ${sumProfit>=0?'good':'danger'}">${fmtYen(sumProfit)}</div><div class="sub">利益率 ${isFinite(profitRate)?profitRate.toFixed(1)+'%':'—'}</div></div>
+      <div class="kpi"><div class="label">期間合計 広告費</div><div class="value">${fmtYen(sumAdCost)}</div></div>
+      <div class="kpi"><div class="label">期間合計 新規獲得件数</div><div class="value">${fmtNum(Math.round(sumNewFront))}</div></div>
+    `;
+
+    // ---- 月次損益テーブル（商材ごとに5指標の行、末尾に全商材合計） ----
+    const metricRows = [
+      { key:'newFront', label:'新規獲得件数', fmt: n=>fmtNum(Math.round(n)) },
+      { key:'revenue', label:'売上', fmt: n=>fmtYen(n) },
+      { key:'cogs', label:'原価', fmt: n=>fmtYen(n) },
+      { key:'adCost', label:'広告費', fmt: n=>fmtYen(n) },
+      { key:'profit', label:'利益', fmt: n=>fmtYen(n), style: n=>n<0?'color:var(--danger);':'' }
+    ];
+    const monthHeaderCells = displayMonths.map(mk=>`<th class="num">${mk.slice(0,4)}/${mk.slice(5,7)}</th>`).join('');
+    let bodyHtml = '';
+    categories.forEach(cat=>{
+      bodyHtml += `<tr><td colspan="${displayMonths.length+2}" style="font-weight:700;">${escapeHtml(cat)}</td></tr>`;
+      metricRows.forEach(m=>{
+        const rowCellsHtml = displayMonths.map(mk=>{
+          const c = cells[cat+'|'+mk];
+          const v = c ? c[m.key] : 0;
+          const style = m.style ? m.style(v) : '';
+          return `<td class="num" style="${style}">${v ? m.fmt(v) : '—'}</td>`;
+        }).join('');
+        const total = displayMonths.reduce((s,mk)=>{ const c = cells[cat+'|'+mk]; return s + (c ? c[m.key] : 0); }, 0);
+        bodyHtml += `<tr><td style="padding-left:20px;color:var(--text-dim);">${m.label}</td>${rowCellsHtml}<td class="num" style="font-weight:700;">${m.fmt(total)}</td></tr>`;
+      });
+    });
+    bodyHtml += `<tr><td colspan="${displayMonths.length+2}" style="font-weight:700;border-top:2px solid var(--border);">合計</td></tr>`;
+    metricRows.forEach(m=>{
+      const rowCellsHtml = displayMonths.map(mk=>{
+        const t = totalsForMonth(mk);
+        const v = t[m.key];
+        const style = m.style ? m.style(v) : '';
+        return `<td class="num" style="${style}">${v ? m.fmt(v) : '—'}</td>`;
+      }).join('');
+      const total = displayMonths.reduce((s,mk)=>s+totalsForMonth(mk)[m.key],0);
+      bodyHtml += `<tr><td style="padding-left:20px;color:var(--text-dim);">${m.label}</td>${rowCellsHtml}<td class="num" style="font-weight:700;">${m.fmt(total)}</td></tr>`;
+    });
+
+    document.getElementById('apPlanTable').innerHTML = `
+      <thead><tr><th>指標</th>${monthHeaderCells}<th class="num">合計</th></tr></thead>
+      <tbody>${bodyHtml}</tbody>
+    `;
+  }
+
   // ---------- invoices tab ----------
   // 請求書PDF本体は保存しない（同期データが肥大化するのを避けるため）。
   // 保存するのは「取引先・対象年月・金額・分類」など、テキストから抽出した
@@ -6763,6 +6940,7 @@
     renderReport();
     renderCostTab();
     renderBudgetTab();
+    renderAnnualPlanTab();
     renderInvoicesTab();
     renderHistory();
     renderDeleteGroupSelect();
@@ -6774,7 +6952,7 @@
     btn.addEventListener('click', ()=>{
       document.querySelectorAll('nav.tabs button').forEach(b=>b.classList.remove('active'));
       btn.classList.add('active');
-      ['dashboard','summary','trend','report','demographics','media','ltv','cost','budget','invoices','manage'].forEach(t=>{
+      ['dashboard','summary','trend','report','demographics','media','ltv','cost','budget','annualplan','invoices','manage'].forEach(t=>{
         document.getElementById('tab-'+t).style.display = (t===btn.dataset.tab) ? '' : 'none';
       });
       renderAll();
@@ -6964,6 +7142,11 @@
     document.getElementById('bpSpendAddMonth').value = '';
     renderBpMonthlySpendTable();
     refreshTrailing3Kpi();
+  });
+  document.getElementById('apStartMonthInput').addEventListener('change', (e)=>{
+    if (!e.target.value) return;
+    apSelectedStartMonth = e.target.value;
+    renderAnnualPlanTab();
   });
   document.getElementById('invoiceDriveMonthAddBtn').addEventListener('click', ()=>{
     const m = document.getElementById('invoiceDriveMonthAdd').value;
