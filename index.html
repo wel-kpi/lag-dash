@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=M+PLUS+2:wght@400;500;700&family=Noto+Sans+JP:wght@400;500;700&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap" rel="stylesheet">
-<title>LAGNET 獲得管理ツール</title>
+<title>LAGNETダッシュボード</title>
 <style>
   :root{
     --bg: #14151a;
@@ -109,6 +109,11 @@
     margin-left:auto;font-size:9.5px;font-weight:700;padding:1px 6px;border-radius:4px;
     background:var(--accent-soft);color:var(--accent);white-space:nowrap;flex:none;
   }
+  .nav-group-label{
+    font-size:10.5px;font-weight:700;color:var(--text-dim);letter-spacing:.04em;
+    padding:14px 12px 4px;
+  }
+  .nav-group-label:first-child{padding-top:2px;}
 
   .panel{background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px;}
   .panel h2{font-size:14px;margin:0 0 14px;color:var(--text);font-weight:700;}
@@ -265,6 +270,7 @@
     nav.tabs button{padding:10px 14px;font-size:13px;border-left:none;border-bottom:2px solid transparent;border-radius:0;}
     nav.tabs button.active{border-left-color:transparent;border-bottom-color:var(--accent);background:none;}
     .wip-tag{margin-left:4px;}
+    .nav-group-label{display:none;}
 
     .grid-kpi{grid-template-columns:1fr 1fr;gap:8px;}
     .kpi{padding:12px;}
@@ -317,7 +323,7 @@
 
   <header class="top">
     <div class="title-wrap">
-      <h1>LAGNET <span class="sub">獲得管理ツール</span></h1>
+      <h1>LAGNET<span class="sub">ダッシュボード</span></h1>
       <span class="ver" id="verLabel"></span>
       <button class="btn small" id="themeToggleBtn" title="ライト/ダーク切替" style="padding:2px 8px;">🌙</button>
       <button id="headerPullBtn" title="サーバーの最新データを取得します" style="padding:6px 14px;font-size:13.5px;font-weight:700;border-radius:8px;border:1px solid #c97a1f;background:#e88b2a;color:#1a1408;cursor:pointer;">⬇ 受信</button>
@@ -331,17 +337,24 @@
 
   <div class="layout">
   <nav class="tabs">
+    <div class="nav-group-label">広告管理</div>
     <button data-tab="dashboard" class="active">📊 ダッシュボード</button>
     <button data-tab="summary">📋 商材×代理店 集計</button>
-    <button data-tab="trend">📈 推移</button>
-    <button data-tab="report">📝 報告</button>
-    <button data-tab="demographics">👥 デモグラ</button>
-    <button data-tab="media">📡 媒体別</button>
+    <button data-tab="trend">📈 日次集計</button>
+    <button data-tab="media">📡 媒体集計</button>
     <button data-tab="ltv">💹 収益シミュレーション</button>
     <button data-tab="cost">💰 広告費設定</button>
+
+    <div class="nav-group-label">収益管理</div>
     <button data-tab="budget">🎯 予算管理<span class="wip-tag">準備中</span></button>
     <button data-tab="annualplan">🗓️ 年間計画<span class="wip-tag">準備中</span></button>
     <button data-tab="invoices">🧾 請求書<span class="wip-tag">準備中</span></button>
+
+    <div class="nav-group-label">分析管理</div>
+    <button data-tab="demographics">👥 デモグラ</button>
+    <button data-tab="report">📝 報告</button>
+
+    <div class="nav-group-label">設定</div>
     <button data-tab="manage">📁 データ管理</button>
   </nav>
   <div class="main-col">
@@ -951,7 +964,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.20.0";
+  const APP_VERSION = "4.21.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -6977,7 +6990,7 @@
     btn.addEventListener('click', ()=>{
       document.querySelectorAll('nav.tabs button').forEach(b=>b.classList.remove('active'));
       btn.classList.add('active');
-      ['dashboard','summary','trend','report','demographics','media','ltv','cost','budget','annualplan','invoices','manage'].forEach(t=>{
+      ['dashboard','summary','trend','media','ltv','cost','budget','annualplan','invoices','demographics','report','manage'].forEach(t=>{
         document.getElementById('tab-'+t).style.display = (t===btn.dataset.tab) ? '' : 'none';
       });
       renderAll();
