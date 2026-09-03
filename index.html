@@ -79,7 +79,10 @@
   *{box-sizing:border-box;}
   html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:var(--sans);}
   body{min-height:100vh;}
-  #app{max-width:1180px;margin:0 auto;padding:24px 20px 80px;}
+  #app{max-width:1320px;margin:0 auto;padding:24px 20px 80px;}
+
+  .layout{display:flex;align-items:flex-start;gap:24px;}
+  .layout .main-col{flex:1;min-width:0;}
 
   header.top{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:8px;}
   header.top .title-wrap{display:flex;align-items:baseline;gap:8px;}
@@ -88,14 +91,24 @@
   header.top .ver{font-size:10.5px;color:var(--text-dim);font-family:var(--mono);border:1px solid var(--border);border-radius:4px;padding:1px 6px;}
   header.top .meta{font-size:12px;color:var(--text-dim);font-family:var(--data-font);font-variant-numeric:tabular-nums;}
 
-  nav.tabs{display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:20px;overflow-x:auto;}
-  nav.tabs button{
-    background:none;border:none;color:var(--text-dim);font-family:var(--sans);font-size:13.5px;
-    padding:10px 16px;cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap;
-    transition:color .15s, border-color .15s;
+  nav.tabs{
+    display:flex;flex-direction:column;gap:2px;flex:0 0 208px;
+    border-right:1px solid var(--border);padding-right:12px;
+    position:sticky;top:20px;align-self:flex-start;
   }
-  nav.tabs button:hover{color:var(--text);}
-  nav.tabs button.active{color:var(--accent);border-bottom-color:var(--accent);font-weight:600;}
+  nav.tabs button{
+    display:flex;align-items:center;gap:6px;
+    background:none;border:none;border-left:2px solid transparent;border-radius:6px;
+    color:var(--text-dim);font-family:var(--sans);font-size:13.5px;text-align:left;
+    padding:10px 12px;cursor:pointer;white-space:nowrap;
+    transition:color .15s, border-color .15s, background .15s;
+  }
+  nav.tabs button:hover{color:var(--text);background:var(--bg-panel-2);}
+  nav.tabs button.active{color:var(--accent);border-left-color:var(--accent);background:var(--accent-soft);font-weight:600;}
+  .wip-tag{
+    margin-left:auto;font-size:9.5px;font-weight:700;padding:1px 6px;border-radius:4px;
+    background:var(--accent-soft);color:var(--accent);white-space:nowrap;flex:none;
+  }
 
   .panel{background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px;}
   .panel h2{font-size:14px;margin:0 0 14px;color:var(--text);font-weight:700;}
@@ -243,8 +256,15 @@
     }
     button.btn.small{ min-height:36px; padding:8px 12px; }
 
-    nav.tabs{gap:2px;}
-    nav.tabs button{padding:10px 14px;font-size:13px;}
+    .layout{flex-direction:column;gap:0;}
+    nav.tabs{
+      flex-direction:row;flex:none;width:100%;gap:2px;overflow-x:auto;
+      border-right:none;border-bottom:1px solid var(--border);
+      position:static;padding-right:0;margin-bottom:16px;
+    }
+    nav.tabs button{padding:10px 14px;font-size:13px;border-left:none;border-bottom:2px solid transparent;border-radius:0;}
+    nav.tabs button.active{border-left-color:transparent;border-bottom-color:var(--accent);background:none;}
+    .wip-tag{margin-left:4px;}
 
     .grid-kpi{grid-template-columns:1fr 1fr;gap:8px;}
     .kpi{padding:12px;}
@@ -309,6 +329,7 @@
     </div>
   </header>
 
+  <div class="layout">
   <nav class="tabs">
     <button data-tab="dashboard" class="active">📊 ダッシュボード</button>
     <button data-tab="summary">📋 商材×代理店 集計</button>
@@ -318,11 +339,12 @@
     <button data-tab="media">📡 媒体別</button>
     <button data-tab="ltv">💹 収益シミュレーション</button>
     <button data-tab="cost">💰 広告費設定</button>
-    <button data-tab="budget">🎯 予算管理</button>
-    <button data-tab="annualplan">🗓️ 年間計画</button>
-    <button data-tab="invoices">🧾 請求書</button>
+    <button data-tab="budget">🎯 予算管理<span class="wip-tag">準備中</span></button>
+    <button data-tab="annualplan">🗓️ 年間計画<span class="wip-tag">準備中</span></button>
+    <button data-tab="invoices">🧾 請求書<span class="wip-tag">準備中</span></button>
     <button data-tab="manage">📁 データ管理</button>
   </nav>
+  <div class="main-col">
 
   <!-- DASHBOARD -->
   <section id="tab-dashboard">
@@ -681,7 +703,7 @@
 
   <!-- BUDGET MANAGEMENT -->
   <section id="tab-budget" style="display:none;">
-    <div class="note-box">
+    <div class="note-box"><strong>🚧 準備中：</strong>まだ調整中のタブです。数値の見え方や項目が変わる可能性があります。<br>
       毎月、各代理店に与えている上限件数を商材・オファーごとに管理するタブです。
     </div>
     <div class="controls">
@@ -718,7 +740,7 @@
 
   <!-- ANNUAL PLAN -->
   <section id="tab-annualplan" style="display:none;">
-    <div class="note-box">
+    <div class="note-box"><strong>🚧 準備中：</strong>実データとどれくらい合っているか検証中のタブです。数値はまだ参考値としてご覧ください。<br>
       月ごとの売上・原価・広告費・利益を、商材×オファーの継続率シミュレーション（収益シミュレーションタブと同じロジック）を積み上げて計算する年間計画です。獲得実績がある月（当月まで）は実績を、それより先の月は「予算管理」タブに入力した上限件数・概算広告費を新規獲得の仮定として使います。継続率・単価・原価は「収益シミュレーション」タブの設定を使うため、精度を上げたい場合はそちらを調整してください。<br>
       <strong>Phase 1の制限：</strong> 表示開始月より前に獲得した既存顧客の継続売上は、開始月からさかのぼれる範囲（開始月の24ヶ月前まで）の実績データがある分だけ考慮しています。それより古い獲得分の継続売上は含まれません。
     </div>
@@ -734,7 +756,7 @@
 
   <!-- INVOICES -->
   <section id="tab-invoices" style="display:none;">
-    <div class="note-box">
+    <div class="note-box"><strong>🚧 準備中：</strong>まだ調整中のタブです。読み取り精度や項目が変わる可能性があります。<br>
       PDFを選択すると、テキストを自動解析して「取引先・対象年月・金額・分類」を仮入力します。ファイル名が「会社名_YYYYMM」の形式になっている場合はそちらを優先します。請求書のフォーマットは発行元によって異なるため、<strong>必ず内容を確認してから保存してください</strong>。取引先名・分類を手直しして保存すると、次回以降は同じ発行元のPDFで自動的に使われるようになります（LAMP・OTONARI・ソッキン・ツナグ・フルスピード・ベルウェール・ラヴィリ・リッツ・レゴーズは初期ルールとして登録済みです。学習内容は他の端末とも共有されます）。<br>
       金額は基本的に<strong>税抜き</strong>で読み取ります（内税表示しかない場合は自動で税抜きに換算します）。<br>
       請求書は基本的にまるごと1つの分類（原価／固定費・変動費／広告費）に振り分けますが、<strong>SUPER STUDIO・共栄物流</strong>の請求書、または「ラグネット」関連の項目とそれ以外が混在していると判断できた請求書（レゴーズのように複数ブランド分がまとまっている場合など）は、品目ごとに分解して仮入力します。ラグネット関連と判断できた項目は自動でチェックが入り、それ以外は<strong>未チェックのまま</strong>になります（チェックを入れたものだけ保存されます）。各項目は「商材」欄で該当する商材（練り香水・バブルスクラブ等、実在するデータから選べます）を、「分類」欄で分類を個別に指定できます（未指定の項目は全体設定の分類を引き継ぎます）。<br>
@@ -913,6 +935,9 @@
     データはこの端末のブラウザ内（localStorage）に保存されます。他の端末と共有するには、画面右上の「受信」ボタン、またはデータ管理タブ一番上の「送信」ボタンを使ってください。<br>
     商材判定: 広告URLグループ名の<code>【】</code>内カテゴリ／代理店判定: 広告主名列／フロント・アップセル判定: 商品コードに <code>upsell</code> を含むか
   </footer>
+
+  </div>
+  </div>
 </div>
 
 <!-- 請求書PDFのテキスト抽出用（ブラウザ内のみで完結、外部送信なし） -->
@@ -926,7 +951,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.19.0";
+  const APP_VERSION = "4.20.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
