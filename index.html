@@ -688,13 +688,15 @@
     <div class="panel">
       <h2>請求書PDFを取り込む</h2>
       <div id="invoiceDropzone" class="dropzone-mini">
-        <div class="main">📄 PDFをドラッグ&ドロップ、またはクリックして選択</div>
-        <input type="file" id="invoiceFileInput" accept="application/pdf">
+        <div class="main">📄 PDFをドラッグ&ドロップ、またはクリックして選択（複数可）</div>
+        <input type="file" id="invoiceFileInput" accept="application/pdf" multiple>
       </div>
       <div class="controls" style="margin-top:8px;">
+        <label class="btn small" style="cursor:pointer;">📁 フォルダを選択して一括取り込み<input type="file" id="invoiceFolderInput" webkitdirectory multiple style="display:none;"></label>
         <button class="btn" id="invoiceManualBtn">PDFなしで手動入力</button>
         <span class="n" id="invoiceParseStatus"></span>
       </div>
+      <div class="note-box" style="margin-top:8px;font-size:11.5px;">複数ファイル・フォルダを選ぶと、1件ずつ内容を確認しながら順番に登録していけます（自動で次の1件に進みます。内容がおかしければ「スキップして次へ」で飛ばせます）。</div>
       <div id="invoiceDraftArea"></div>
     </div>
     <div class="panel">
@@ -869,7 +871,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.11.0";
+  const APP_VERSION = "4.12.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -5884,10 +5886,24 @@
 
   let invoiceDraft = null;
   let invoiceMonthFilter = '';
+  // フォルダ／複数選択で取り込んだ時に、1件ずつ順番に確認していくための待ち行列。
+  let invoiceQueue = [];       // まだ処理していない File の配列
+  let invoiceQueueDone = 0;    // ここまでに処理した件数（進捗表示用）
+  let invoiceQueueTotal = 0;   // 今回のバッチの総件数（0 = 一括取り込み中ではない）
+
+  // 直前のドラフトが持っていたPDFプレビュー用URLを解放する（メモリリーク防止）。
+  function revokeInvoiceDraftPreview(){
+    if (invoiceDraft && invoiceDraft.previewUrl){
+      try{ URL.revokeObjectURL(invoiceDraft.previewUrl); }catch(e){}
+    }
+  }
 
   async function handleInvoicePdfFile(file){
+    revokeInvoiceDraftPreview();
     const statusEl = document.getElementById('invoiceParseStatus');
     if (statusEl) statusEl.textContent = '解析中…';
+    const previewUrl = (()=>{ try{ return URL.createObjectURL(file); }catch(e){ return ''; } })();
+    const queueInfo = invoiceQueueTotal > 1 ? { index: invoiceQueueDone, total: invoiceQueueTotal } : null;
     try{
       const buf = await file.arrayBuffer();
       const { text, lines } = await extractPdfText(buf);
@@ -5912,14 +5928,36 @@
       invoiceDraft = {
         editId: null, fileName: file.name, vendor, guessedVendor, month, category: hints.category, hasLineItems, amount, lineItems,
         textSignature: firstMeaningfulLine(text), filenameStem: filenameStemKey(file.name),
-        rawTextPreview: text.slice(0, 3000)
+        rawTextPreview: text.slice(0, 3000), previewUrl, queueInfo
       };
     }catch(err){
-      invoiceDraft = { editId: null, fileName: file.name, vendor: file.name.replace(/\.pdf$/i, ''), guessedVendor: '', month: '', category: '', hasLineItems: false, amount: 0, lineItems: [], textSignature: '', filenameStem: '', rawTextPreview: '' };
+      invoiceDraft = { editId: null, fileName: file.name, vendor: file.name.replace(/\.pdf$/i, ''), guessedVendor: '', month: '', category: '', hasLineItems: false, amount: 0, lineItems: [], textSignature: '', filenameStem: '', rawTextPreview: '', previewUrl, queueInfo };
       alert('PDFの自動解析に失敗しました。内容を手動で入力してください。（' + ((err && err.message) || err) + '）');
     }
     if (statusEl) statusEl.textContent = '';
     renderInvoiceDraftForm();
+  }
+
+  // フォルダ／複数ファイル選択から、PDFだけを抜き出して待ち行列に積み、
+  // 1件目の確認画面を開く。以降は保存／スキップのたびに次の1件へ自動で進む。
+  function handleInvoiceFilesQueue(fileList){
+    const files = Array.from(fileList || []).filter(f => f && /\.pdf$/i.test(f.name));
+    if (!files.length){ alert('PDFファイルが見つかりませんでした。'); return; }
+    invoiceQueue = files;
+    invoiceQueueTotal = files.length;
+    invoiceQueueDone = 0;
+    processNextInvoiceInQueue();
+  }
+  function processNextInvoiceInQueue(){
+    if (!invoiceQueue.length){
+      const total = invoiceQueueTotal;
+      invoiceQueueTotal = 0; invoiceQueueDone = 0;
+      if (total > 1) alert(`${total}件の確認が完了しました。`);
+      return;
+    }
+    const file = invoiceQueue.shift();
+    invoiceQueueDone++;
+    handleInvoicePdfFile(file);
   }
 
   function categorySelectHtml(id, current, includeBlankAsInherit){
@@ -5935,23 +5973,34 @@
     if (!area) return;
     if (!invoiceDraft){ area.innerHTML = ''; return; }
     const d = invoiceDraft;
+    const queueLabel = d.queueInfo ? `<span class="n">（${d.queueInfo.index} / ${d.queueInfo.total} 件目）</span>` : '';
+    const saveBtnLabel = (d.queueInfo && invoiceQueue.length) ? '登録して次へ' : '登録する';
+    const cancelBtnLabel = (d.queueInfo && invoiceQueue.length) ? 'スキップして次へ' : 'キャンセル';
     area.innerHTML = `
       <div class="panel" style="border-color:var(--accent);border-width:2px;margin-top:12px;">
-        <h3 style="margin-top:0;">内容を確認して登録${d.fileName ? `<span class="n">（${escapeHtml(d.fileName)}）</span>` : ''}</h3>
-        <div class="inline-form">
-          <label>取引先 <input type="text" id="draftVendor" value="${escapeHtml(d.vendor)}" style="width:220px;"></label>
-          <label>対象年月 <input type="month" id="draftMonth" value="${escapeHtml(d.month)}"></label>
-          <label>全体設定の分類 ${categorySelectHtml('draftCategory', d.category, false)}</label>
-        </div>
-        <label style="display:flex;align-items:center;gap:6px;margin-top:10px;">
-          <input type="checkbox" id="draftHasLineItems" ${d.hasLineItems ? 'checked' : ''}>
-          項目ごとに分けて入力する（SUPER STUDIO・共栄物流など、項目ごとに分類を分けたい請求書用）
-        </label>
-        <div id="draftAmountArea" style="margin-top:10px;"></div>
-        ${d.rawTextPreview ? `<details style="margin-top:10px;"><summary style="cursor:pointer;font-size:11.5px;color:var(--text-dim);">抽出したテキスト（確認用）</summary><pre style="white-space:pre-wrap;font-size:11px;color:var(--text-dim);max-height:200px;overflow:auto;background:var(--bg-panel-2);padding:8px;border-radius:6px;margin-top:6px;">${escapeHtml(d.rawTextPreview)}</pre></details>` : ''}
-        <div class="controls" style="margin-top:12px;">
-          <button class="btn" id="draftCancelBtn">キャンセル</button>
-          <button class="btn primary" id="draftSaveBtn">登録する</button>
+        <h3 style="margin-top:0;">内容を確認して登録${queueLabel}${d.fileName ? `<span class="n">（${escapeHtml(d.fileName)}）</span>` : ''}</h3>
+        <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start;">
+          <div style="flex:1 1 380px;min-width:320px;">
+            <div class="inline-form">
+              <label>取引先 <input type="text" id="draftVendor" value="${escapeHtml(d.vendor)}" style="width:220px;"></label>
+              <label>対象年月 <input type="month" id="draftMonth" value="${escapeHtml(d.month)}"></label>
+              <label>全体設定の分類 ${categorySelectHtml('draftCategory', d.category, false)}</label>
+            </div>
+            <label style="display:flex;align-items:center;gap:6px;margin-top:10px;">
+              <input type="checkbox" id="draftHasLineItems" ${d.hasLineItems ? 'checked' : ''}>
+              項目ごとに分けて入力する（SUPER STUDIO・共栄物流など、項目ごとに分類を分けたい請求書用）
+            </label>
+            <div id="draftAmountArea" style="margin-top:10px;"></div>
+            ${d.rawTextPreview ? `<details style="margin-top:10px;"><summary style="cursor:pointer;font-size:11.5px;color:var(--text-dim);">抽出したテキスト（確認用）</summary><pre style="white-space:pre-wrap;font-size:11px;color:var(--text-dim);max-height:200px;overflow:auto;background:var(--bg-panel-2);padding:8px;border-radius:6px;margin-top:6px;">${escapeHtml(d.rawTextPreview)}</pre></details>` : ''}
+            <div class="controls" style="margin-top:12px;">
+              <button class="btn" id="draftCancelBtn">${cancelBtnLabel}</button>
+              <button class="btn primary" id="draftSaveBtn">${saveBtnLabel}</button>
+            </div>
+          </div>
+          ${d.previewUrl ? `<div style="flex:1 1 320px;min-width:280px;">
+            <div class="n" style="margin-bottom:4px;">添付PDFのプレビュー（読み取り結果と見比べてご確認ください）</div>
+            <iframe src="${escapeHtml(d.previewUrl)}" style="width:100%;height:600px;border:1px solid var(--border);border-radius:8px;background:#fff;"></iframe>
+          </div>` : ''}
         </div>
       </div>
     `;
@@ -5968,8 +6017,9 @@
       renderDraftAmountArea();
     });
     document.getElementById('draftCancelBtn').addEventListener('click', ()=>{
+      revokeInvoiceDraftPreview();
       invoiceDraft = null;
-      renderInvoiceDraftForm();
+      if (invoiceQueue.length){ processNextInvoiceInQueue(); } else { renderInvoiceDraftForm(); }
     });
     document.getElementById('draftSaveBtn').addEventListener('click', saveDraftInvoice);
   }
@@ -6095,8 +6145,14 @@
         saveInvoiceVendorRules(rules);
       }
     }
+    revokeInvoiceDraftPreview();
     invoiceDraft = null;
-    renderInvoicesTab();
+    if (invoiceQueue.length){
+      renderInvoicesTab();
+      processNextInvoiceInQueue();
+    } else {
+      renderInvoicesTab();
+    }
   }
 
   function copyToClipboard(text){
@@ -6186,7 +6242,8 @@
       btn.addEventListener('click', ()=>{
         const inv = loadInvoices().find(x=>x.id === btn.dataset.id);
         if (!inv) return;
-        invoiceDraft = { editId: inv.id, fileName: inv.fileName, vendor: inv.vendor, guessedVendor: inv.vendor, month: inv.month, category: inv.category || '', hasLineItems: inv.hasLineItems, amount: inv.amount, lineItems: (inv.lineItems||[]).map(i=>({...i, checked: true})), textSignature: '', filenameStem: '', rawTextPreview: '' };
+        revokeInvoiceDraftPreview();
+        invoiceDraft = { editId: inv.id, fileName: inv.fileName, vendor: inv.vendor, guessedVendor: inv.vendor, month: inv.month, category: inv.category || '', hasLineItems: inv.hasLineItems, amount: inv.amount, lineItems: (inv.lineItems||[]).map(i=>({...i, checked: true})), textSignature: '', filenameStem: '', rawTextPreview: '', previewUrl: '', queueInfo: null };
         renderInvoiceDraftForm();
         document.getElementById('invoiceDraftArea').scrollIntoView({ behavior: 'smooth', block: 'center' });
       });
@@ -6404,7 +6461,8 @@
   const invoiceFileInput = document.getElementById('invoiceFileInput');
   invoiceDropzone.addEventListener('click', ()=>invoiceFileInput.click());
   invoiceFileInput.addEventListener('change', (e)=>{
-    if (e.target.files.length) handleInvoicePdfFile(e.target.files[0]);
+    if (e.target.files.length) handleInvoiceFilesQueue(e.target.files);
+    invoiceFileInput.value = '';
   });
   ['dragenter','dragover'].forEach(evt=>{
     invoiceDropzone.addEventListener(evt, (e)=>{ e.preventDefault(); invoiceDropzone.classList.add('drag'); });
@@ -6414,10 +6472,16 @@
   });
   invoiceDropzone.addEventListener('drop', (e)=>{
     const files = e.dataTransfer.files;
-    if (files.length) handleInvoicePdfFile(files[0]);
+    if (files.length) handleInvoiceFilesQueue(files);
+  });
+  const invoiceFolderInput = document.getElementById('invoiceFolderInput');
+  invoiceFolderInput.addEventListener('change', (e)=>{
+    if (e.target.files.length) handleInvoiceFilesQueue(e.target.files);
+    invoiceFolderInput.value = '';
   });
   document.getElementById('invoiceManualBtn').addEventListener('click', ()=>{
-    invoiceDraft = { editId: null, fileName: '', vendor: '', guessedVendor: '', month: '', category: '', hasLineItems: false, amount: 0, lineItems: [], textSignature: '', filenameStem: '', rawTextPreview: '' };
+    revokeInvoiceDraftPreview();
+    invoiceDraft = { editId: null, fileName: '', vendor: '', guessedVendor: '', month: '', category: '', hasLineItems: false, amount: 0, lineItems: [], textSignature: '', filenameStem: '', rawTextPreview: '', previewUrl: '', queueInfo: null };
     renderInvoiceDraftForm();
   });
   document.getElementById('invoiceMonthFilter').addEventListener('change', (e)=>{
