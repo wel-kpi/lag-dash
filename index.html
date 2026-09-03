@@ -710,13 +710,8 @@
     </div>
     <div class="panel">
       <h2>目標件数と余力<span class="n">（商材ごと）</span></h2>
-      <div class="note-box">「目標件数」は商材ごとに手入力してください。「上限件数（合計）」は上の予算上限入力の商材別合計、「実績（現在）」はダッシュボードの着地想定と同じロジックで集計した今月の実績です。残件数・残予算がマイナスになると赤字＋⚠で表示されます。</div>
+      <div class="note-box">「目標件数」「目標CPA」は商材ごとに手入力してください（目標広告費＝目標件数×目標CPA）。「上限件数（合計）」は上の予算上限入力の商材別合計、「実績（現在）」はダッシュボードの着地想定と同じロジックで集計した今月の実績です。「進捗」は実績－上限件数で、上限を超えていれば＋、達していなければ－で表示します。進捗が＋（上限超過）または残予算がマイナスになると赤字＋⚠で表示されます。</div>
       <div class="table-wrap"><table class="data" id="bpTargetsTable"></table></div>
-    </div>
-    <div class="panel">
-      <h2>予実比較・着地<span class="n">（当初目標 vs 実績・着地見込み）</span></h2>
-      <div class="note-box">着地見込みは、今月ここまでの実績を日割り平均で月末まで延長した予測値です（ダッシュボードの着地想定と同じロジック）。差分は「着地見込み − 目標」で、件数はプラスが超過達成、広告費はプラスが予算オーバーです。</div>
-      <div class="table-wrap"><table class="data" id="bpComparisonTable"></table></div>
     </div>
   </section>
 
@@ -914,7 +909,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.17.0";
+  const APP_VERSION = "4.18.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -6004,10 +5999,17 @@
     // 「上限件数」は上の予算上限入力（rows）の商材別合計、「実績」は着地計算と
     // 同じロジック（computeLanding）の現時点カウント・広告費を流用する（過去月は
     // 月末まで確定値、当月は今日時点までの実績）。
+    // 目標CPAはこのパネル専用の値（上の予算上限入力の単価/CPAとは別物）で、
+    // 目標広告費（目標件数×目標CPA）の算出だけに使う。
     const targets = loadBudgetTargetsForMonth(bpSelectedMonth);
     const targetCategories = sortCategoriesForDisplay(Array.from(new Set(
       bpKnownCategories(records).concat(rows.map(r=>r.category)).filter(Boolean)
     )));
+    function targetEntry(cat){
+      const t = targets[cat];
+      if (t && typeof t === 'object') return t;
+      return { count: Number(t) || 0, cpa: 0 }; // 旧形式（数値のみ）との互換
+    }
     function persistTargets(){ saveBudgetTargetsForMonth(bpSelectedMonth, targets); }
     function capCountForCategory(cat){ return rows.filter(r=>r.category===cat).reduce((s,r)=>s+(Number(r.capCount)||0),0); }
     function capCostForCategory(cat){ return rows.filter(r=>r.category===cat).reduce((s,r)=>s+budgetRowCost(r),0); }
@@ -6015,65 +6017,44 @@
 
     document.getElementById('bpTargetsTable').innerHTML = targetCategories.length ? `
       <thead><tr>
-        <th>商材</th><th class="num">目標件数</th><th class="num">上限件数（合計）</th>
-        <th class="num">実績（現在）</th><th class="num">残件数</th><th class="num">残予算</th>
+        <th>商材</th><th class="num">目標件数</th><th class="num">目標CPA(円)</th><th class="num">目標広告費</th>
+        <th class="num">上限件数（合計）</th><th class="num">実績（現在）</th><th class="num">進捗</th><th class="num">残予算</th>
       </tr></thead>
       <tbody>${targetCategories.map(cat=>{
+        const entry = targetEntry(cat);
         const cap = capCountForCategory(cat);
         const capCost = capCostForCategory(cat);
         const landing = computeLanding(cat, null, bpSelectedMonth);
-        const remainCount = cap - landing.count;
+        const progress = landing.count - cap; // 上限を超えていれば＋、達していなければ－
         const remainBudget = capCost - landing.cost;
+        const targetCost = entry.count * entry.cpa;
         return `<tr>
           <td>${escapeHtml(cat)}</td>
-          <td class="num"><input type="number" class="js-bp-target" data-cat="${escapeHtml(cat)}" value="${Number(targets[cat])||0}" min="0" style="width:90px;text-align:right;"></td>
+          <td class="num"><input type="number" class="js-bp-target-count" data-cat="${escapeHtml(cat)}" value="${entry.count}" min="0" style="width:90px;text-align:right;"></td>
+          <td class="num"><input type="number" class="js-bp-target-cpa" data-cat="${escapeHtml(cat)}" value="${entry.cpa}" min="0" style="width:100px;text-align:right;"></td>
+          <td class="num">${targetCost>0?fmtYen(targetCost):'—'}</td>
           <td class="num">${fmtNum(cap)}</td>
           <td class="num">${fmtNum(Math.round(landing.count))}</td>
-          <td class="num" style="${warnStyle(remainCount<0)}">${remainCount<0?'⚠ ':''}${fmtNum(Math.round(remainCount))}</td>
+          <td class="num" style="${warnStyle(progress>0)}">${progress>0?'⚠ ':''}${progress>=0?'+':''}${fmtNum(Math.round(progress))}</td>
           <td class="num" style="${warnStyle(remainBudget<0)}">${remainBudget<0?'⚠ ':''}${fmtYen(remainBudget)}</td>
         </tr>`;
       }).join('')}</tbody>
-    ` : emptyRow(6);
-    document.querySelectorAll('.js-bp-target').forEach(inp=>{
-      let t=null;
-      function commit(){
-        targets[inp.dataset.cat] = Number(inp.value) || 0;
-        persistTargets();
-      }
-      inp.addEventListener('input', ()=>{ clearTimeout(t); t=setTimeout(commit, 500); });
-      inp.addEventListener('change', ()=>{ clearTimeout(t); commit(); renderBudgetTab(); });
-    });
-
-    // ---------- 予実比較・着地（商材ごと） ----------
-    // 目標広告費は「目標件数 × 上限入力から算出した商材の平均単価」で概算する。
-    // 着地見込みはダッシュボードの着地想定と同じ computeLanding() を使う。
-    document.getElementById('bpComparisonTable').innerHTML = targetCategories.length ? `
-      <thead><tr>
-        <th>商材</th><th class="num">目標件数</th><th class="num">目標広告費</th>
-        <th class="num">実績件数（現在）</th><th class="num">着地見込み件数</th>
-        <th class="num">着地見込み広告費</th><th class="num">差分（件数）</th><th class="num">差分（広告費）</th>
-      </tr></thead>
-      <tbody>${targetCategories.map(cat=>{
-        const target = Number(targets[cat]) || 0;
-        const cap = capCountForCategory(cat);
-        const capCost = capCostForCategory(cat);
-        const avgUnit = cap > 0 ? capCost / cap : 0;
-        const targetCost = target * avgUnit;
-        const landing = computeLanding(cat, null, bpSelectedMonth);
-        const diffCount = landing.landingCount - target;
-        const diffCost = landing.landingCost - targetCost;
-        return `<tr>
-          <td>${escapeHtml(cat)}</td>
-          <td class="num">${fmtNum(target)}</td>
-          <td class="num">${targetCost>0?fmtYen(targetCost):'—'}</td>
-          <td class="num">${fmtNum(Math.round(landing.count))}</td>
-          <td class="num">${fmtNum(Math.round(landing.landingCount))}</td>
-          <td class="num">${landing.landingCost>0?fmtYen(landing.landingCost):'—'}</td>
-          <td class="num" style="${warnStyle(diffCount<0)}">${diffCount>=0?'+':''}${fmtNum(Math.round(diffCount))}</td>
-          <td class="num" style="${warnStyle(diffCost>0)}">${diffCost>=0?'+':''}${fmtYen(diffCost)}</td>
-        </tr>`;
-      }).join('')}</tbody>
     ` : emptyRow(8);
+    function wireTargetInput(sel, apply){
+      document.querySelectorAll(sel).forEach(inp=>{
+        let t=null;
+        function commit(){
+          const entry = targetEntry(inp.dataset.cat);
+          apply(entry, Number(inp.value) || 0);
+          targets[inp.dataset.cat] = entry;
+          persistTargets();
+        }
+        inp.addEventListener('input', ()=>{ clearTimeout(t); t=setTimeout(commit, 500); });
+        inp.addEventListener('change', ()=>{ clearTimeout(t); commit(); renderBudgetTab(); });
+      });
+    }
+    wireTargetInput('.js-bp-target-count', (entry, val)=>{ entry.count = val; });
+    wireTargetInput('.js-bp-target-cpa', (entry, val)=>{ entry.cpa = val; });
   }
 
   // ---------- invoices tab ----------
