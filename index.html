@@ -680,8 +680,8 @@
   <!-- INVOICES -->
   <section id="tab-invoices" style="display:none;">
     <div class="note-box">
-      PDFを選択すると、テキストを自動解析して「取引先・対象年月・金額」を仮入力します。請求書のフォーマットは発行元によって異なるため、<strong>必ず内容を確認してから保存してください</strong>。<br>
-      請求書は基本的にまるごと1つの分類（原価／固定費・変動費／広告費）に振り分けますが、<strong>SUPER STUDIO・共栄物流</strong>の請求書だけは明細を項目ごとに分解し、項目単位で分類を上書きできます（未指定の項目は全体設定の分類を引き継ぎます）。<br>
+      PDFを選択すると、テキストを自動解析して「取引先・対象年月・金額」を仮入力します。請求書のフォーマットは発行元によって異なるため、<strong>必ず内容を確認してから保存してください</strong>。取引先名を手直しして保存すると、次回以降は同じ発行元のPDFで自動的に使われるようになります（学習内容は他の端末とも共有されます）。<br>
+      請求書は基本的にまるごと1つの分類（原価／固定費・変動費／広告費）に振り分けますが、<strong>SUPER STUDIO・共栄物流</strong>の請求書、または複数の項目（別ブランド分など）が含まれると判断された請求書は、明細ごとに分解して仮入力します。各項目には「計上する」チェックがあり、<strong>チェックを入れたものだけ保存されます</strong>（項目名・金額・分類はそれぞれ個別に修正できます。分類が未指定の項目は全体設定を引き継ぎます）。<br>
       PDFファイル自体はこのツールには保存されません。Google Driveにアップロードしたら、下の読み取り履歴で月ごとにフォルダリンクを保存しておくと、みんなが辿れます。
     </div>
     <div class="panel">
@@ -861,7 +861,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.7.0";
+  const APP_VERSION = "4.8.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -892,6 +892,7 @@
   const SHEET_CONFIG_KEY = 'lagnet_sheet_config_v1';
   const INVOICES_KEY = 'lagnet_invoices_v1';
   const INVOICE_DRIVE_LINKS_KEY = 'lagnet_invoice_drive_links_v1';
+  const INVOICE_VENDOR_RULES_KEY = 'lagnet_invoice_vendor_rules_v1';
   const MEDIA_MAP_KEY = 'lagnet_media_map_v1';
   const MEDIA_MAP_TIMESTAMPS_KEY = 'lagnet_media_map_timestamps_v1';
   const MEDIA_MAP_HISTORY_KEY = 'lagnet_media_map_history_v1';
@@ -1203,6 +1204,7 @@
     sheetConfig: SHEET_CONFIG_KEY,
     invoices: INVOICES_KEY,
     invoiceDriveLinks: INVOICE_DRIVE_LINKS_KEY,
+    invoiceVendorRules: INVOICE_VENDOR_RULES_KEY,
     // ダッシュボードの「着地想定」で使う手動調整・グループ別の手入力件数。
     // これが同期対象から漏れていたため、着地想定の数字だけ端末ごとに
     // バラバラになる不具合があった（定数の宣言順の都合上、キー名は
@@ -5611,6 +5613,19 @@
     localStorage.setItem(INVOICE_DRIVE_LINKS_KEY, json);
     if (changed) markLocalMutation();
   }
+  // 取引先の自動判定を「学習」させるためのルール。人が取引先名を手直しして
+  // 保存するたびに、そのPDFの特徴（先頭行のテキスト・ファイル名の型）と
+  // 正しい取引先名の組を覚えておき、次に似たPDFが来た時に自動で使う。
+  // 他の端末とも共有する（誰か一人が一度直せば、全員分の推測精度が上がる）。
+  function loadInvoiceVendorRules(){
+    try{ return JSON.parse(localStorage.getItem(INVOICE_VENDOR_RULES_KEY) || '[]'); }catch(e){ return []; }
+  }
+  function saveInvoiceVendorRules(arr){
+    const json = JSON.stringify(arr);
+    const changed = localStorage.getItem(INVOICE_VENDOR_RULES_KEY) !== json;
+    localStorage.setItem(INVOICE_VENDOR_RULES_KEY, json);
+    if (changed) markLocalMutation();
+  }
   function invoiceTotal(inv){
     return inv.hasLineItems ? (inv.lineItems||[]).reduce((s,i)=>s+(Number(i.amount)||0), 0) : (Number(inv.amount)||0);
   }
@@ -5681,13 +5696,42 @@
     return '';
   }
   const KNOWN_INVOICE_VENDORS = ['SUPER STUDIO','スーパースタジオ','共栄物流','LETGOS','サークア','UNIQUEST','インフルエンサー','Google','Meta','TikTok','LINE','Yahoo'];
-  // まず既知の取引先名リストと一致するか調べ、無ければ「◯◯株式会社」のような
-  // パターンを本文から探す（宛先＝自社側を指す「〜御中」の行は除外する）。
-  function guessInvoiceVendor(text){
+  // 学習用の「手がかり」を2種類、抽出結果から作る。
+  // ・textSignature: 抽出テキストの先頭の空でない行（多くはロゴ文字や書類タイトルで、
+  //   同じ発行元なら毎回ほぼ同じ文字列になる）
+  // ・filenameStemKey: ファイル名から数字（年月日など）を取り除いた残り（同じ
+  //   送り主から届くファイルは命名パターンが揃っていることが多い）
+  function firstMeaningfulLine(text){
+    const lines = String(text||'').split('\n').map(l=>l.trim()).filter(Boolean);
+    return lines[0] || '';
+  }
+  function filenameStemKey(fileName){
+    return String(fileName||'').replace(/\.pdf$/i,'').replace(/[0-9]{2,}/g,'').replace(/[_\-\s.]+/g,'').toLowerCase();
+  }
+  // まず既知の取引先名リストと一致するか調べ、次に過去の学習ルール（人が手直し
+  // して覚えたもの）と一致するか調べ、最後に「◯◯株式会社」のようなパターンを
+  // 本文から探す（宛先＝自社側を指す「〜御中」の行は除外する）。
+  function matchKnownVendor(text){
     const upper = text.toUpperCase();
     for (const v of KNOWN_INVOICE_VENDORS){
       if (upper.includes(v.toUpperCase())) return v;
     }
+    return '';
+  }
+  function matchLearnedVendor(text, fileName, rules){
+    const sig = firstMeaningfulLine(text);
+    const stem = filenameStemKey(fileName);
+    if (sig){
+      const bySig = rules.find(r => r.textSignature && r.textSignature === sig);
+      if (bySig) return bySig.vendor;
+    }
+    if (stem){
+      const byStem = rules.find(r => r.filenameStem && r.filenameStem === stem);
+      if (byStem) return byStem.vendor;
+    }
+    return '';
+  }
+  function matchGenericVendorPattern(text){
     const lines = text.split('\n');
     for (const line of lines){
       if (line.includes('御中')) continue;
@@ -5696,14 +5740,20 @@
     }
     return '';
   }
+  function guessInvoiceVendor(text, fileName, rules){
+    return matchKnownVendor(text) || matchLearnedVendor(text, fileName||'', rules||[]) || matchGenericVendorPattern(text) || '';
+  }
   function isLineItemVendor(vendor, text){
     const t = (String(vendor) + ' ' + String(text)).toUpperCase();
     return LINE_ITEM_VENDORS.some(v => t.includes(v.toUpperCase()));
   }
-  // SUPER STUDIO・共栄物流のように性質の異なる項目が混在する請求書向けに、
-  // 行ごとに末尾の金額を拾って明細として取り出す（「合計」「小計」などの
-  // 集計行は明細ではないので除外する）。項目名はその行から金額部分を除いた
-  // 残りのテキストとする。分類は初期状態では未指定（＝全体設定を引き継ぐ）。
+  // SUPER STUDIO・共栄物流のように性質の異なる項目が混在する請求書だけでなく、
+  // 別ブランド分の金額が混ざっている請求書などでも使えるよう、常にPDF全体から
+  // 行ごとの明細候補を抽出しておく（実際に項目ごとに分けて登録するかどうかは
+  // ドラフト側でチェックボックスにより判断する）。行ごとに末尾の金額を拾い、
+  // 「合計」「小計」などの集計行は明細ではないので除外する。項目名はその行から
+  // 金額部分を除いた残りのテキストとする。分類は初期状態では未指定（＝全体設定
+  // を引き継ぐ）。
   function extractLineItems(lines){
     const items = [];
     (lines || []).forEach(({ text })=>{
@@ -5714,7 +5764,7 @@
       const amt = parseYenAmount(m[1]);
       if (!amt) return;
       const label = text.slice(0, text.length - m[0].length).trim() || '(項目名不明)';
-      items.push({ id: Date.now() + '-' + Math.random().toString(36).slice(2, 8), label, amount: amt, category: '' });
+      items.push({ id: Date.now() + '-' + Math.random().toString(36).slice(2, 8) + '-' + items.length, label, amount: amt, category: '', checked: true });
     });
     return items;
   }
@@ -5728,18 +5778,24 @@
     try{
       const buf = await file.arrayBuffer();
       const { text, lines } = await extractPdfText(buf);
-      const vendor = guessInvoiceVendor(text) || file.name.replace(/\.pdf$/i, '');
+      const rules = loadInvoiceVendorRules();
+      const guessedVendor = guessInvoiceVendor(text, file.name, rules);
+      const vendor = guessedVendor || file.name.replace(/\.pdf$/i, '');
       const month = guessInvoiceMonth(text);
-      const hasLineItems = isLineItemVendor(vendor, text);
-      let amount = 0, lineItems = [];
-      if (hasLineItems){
-        lineItems = extractLineItems(lines);
-      } else {
-        amount = guessInvoiceAmount(text);
-      }
-      invoiceDraft = { editId: null, fileName: file.name, vendor, month, category: '', hasLineItems, amount, lineItems, rawTextPreview: text.slice(0, 3000) };
+      // 別ブランド分の金額が混ざっている請求書などにも対応できるよう、常に
+      // 明細候補を抽出しておく。実際に項目ごとに分けて登録するかは、
+      // SUPER STUDIO・共栄物流の場合、または明細候補が2件以上見つかった場合に
+      // デフォルトでON（それ以外は普段どおり合計金額1本のまま）。
+      const lineItems = extractLineItems(lines);
+      const hasLineItems = isLineItemVendor(vendor, text) || lineItems.length > 1;
+      const amount = hasLineItems ? 0 : guessInvoiceAmount(text);
+      invoiceDraft = {
+        editId: null, fileName: file.name, vendor, guessedVendor, month, category: '', hasLineItems, amount, lineItems,
+        textSignature: firstMeaningfulLine(text), filenameStem: filenameStemKey(file.name),
+        rawTextPreview: text.slice(0, 3000)
+      };
     }catch(err){
-      invoiceDraft = { editId: null, fileName: file.name, vendor: file.name.replace(/\.pdf$/i, ''), month: '', category: '', hasLineItems: false, amount: 0, lineItems: [], rawTextPreview: '' };
+      invoiceDraft = { editId: null, fileName: file.name, vendor: file.name.replace(/\.pdf$/i, ''), guessedVendor: '', month: '', category: '', hasLineItems: false, amount: 0, lineItems: [], textSignature: '', filenameStem: '', rawTextPreview: '' };
       alert('PDFの自動解析に失敗しました。内容を手動で入力してください。（' + ((err && err.message) || err) + '）');
     }
     if (statusEl) statusEl.textContent = '';
@@ -5803,26 +5859,34 @@
     if (!el || !invoiceDraft) return;
     const d = invoiceDraft;
     if (d.hasLineItems){
-      const total = (d.lineItems||[]).reduce((s,i)=>s+(Number(i.amount)||0), 0);
+      const total = (d.lineItems||[]).filter(i=>i.checked!==false).reduce((s,i)=>s+(Number(i.amount)||0), 0);
       el.innerHTML = `
+        <p class="n">計上するものだけチェックを入れてください（チェックを外した項目は保存されません）。別ブランド分など不要な行はチェックを外すか削除してください。</p>
         <div class="table-wrap">
           <table class="data">
-            <thead><tr><th>項目名</th><th class="num">金額(円)</th><th>分類</th><th></th></tr></thead>
+            <thead><tr><th>計上</th><th>項目名</th><th class="num">金額(円)</th><th>分類</th><th></th></tr></thead>
             <tbody>${(d.lineItems||[]).map((item,i)=>`
-              <tr data-i="${i}">
+              <tr data-i="${i}" style="${item.checked===false?'opacity:.5;':''}">
+                <td><input type="checkbox" class="js-item-checked" data-i="${i}" ${item.checked!==false?'checked':''}></td>
                 <td style="text-align:left;"><input type="text" class="js-item-label" data-i="${i}" value="${escapeHtml(item.label)}" style="width:100%;"></td>
                 <td class="num"><input type="number" class="js-item-amount" data-i="${i}" value="${Number(item.amount)||0}" style="width:110px;text-align:right;"><div class="n" style="font-size:10.5px;">${fmtYen(item.amount)}</div></td>
                 <td>${categorySelectHtml('itemCat'+i, item.category, true)}<div class="n" style="font-size:10.5px;margin-top:2px;">未指定時: ${categoryBadgeHtml(d.category)}</div></td>
                 <td><button type="button" class="btn small danger js-item-del" data-i="${i}">×</button></td>
               </tr>
-            `).join('') || emptyRow(4)}</tbody>
+            `).join('') || emptyRow(5)}</tbody>
           </table>
         </div>
         <div class="controls" style="margin-top:8px;">
           <button type="button" class="btn small" id="draftItemAddBtn">＋ 項目を追加</button>
-          <span class="n">合計: ${fmtYen(total)}</span>
+          <span class="n">計上合計: ${fmtYen(total)}</span>
         </div>
       `;
+      document.querySelectorAll('.js-item-checked').forEach(cb=>{
+        cb.addEventListener('change', ()=>{
+          invoiceDraft.lineItems[Number(cb.dataset.i)].checked = cb.checked;
+          renderDraftAmountArea();
+        });
+      });
       document.querySelectorAll('.js-item-label').forEach(inp=>{
         inp.addEventListener('input', ()=>{ invoiceDraft.lineItems[Number(inp.dataset.i)].label = inp.value; });
       });
@@ -5843,7 +5907,7 @@
         });
       });
       document.getElementById('draftItemAddBtn').addEventListener('click', ()=>{
-        invoiceDraft.lineItems.push({ id: Date.now()+'-'+Math.random().toString(36).slice(2,8), label: '', amount: 0, category: '' });
+        invoiceDraft.lineItems.push({ id: Date.now()+'-'+Math.random().toString(36).slice(2,8), label: '', amount: 0, category: '', checked: true });
         renderDraftAmountArea();
       });
     } else {
@@ -5864,7 +5928,9 @@
     if (!month){ alert('対象年月を入力してください。'); return; }
     let amount = 0, lineItems = [];
     if (hasLineItems){
-      lineItems = (d.lineItems || []).map(item=>({ id: item.id, label: item.label, amount: Number(item.amount)||0, category: item.category || '' }));
+      // チェックを外した項目（別ブランド分など計上しないもの）は保存しない。
+      lineItems = (d.lineItems || []).filter(item=>item.checked !== false)
+        .map(item=>({ id: item.id, label: item.label, amount: Number(item.amount)||0, category: item.category || '' }));
     } else {
       amount = Number(document.getElementById('draftAmount').value) || 0;
     }
@@ -5877,6 +5943,15 @@
     const idx = invoices.findIndex(x=>x.id === record.id);
     if (idx >= 0) invoices[idx] = record; else invoices.push(record);
     saveInvoices(invoices);
+    // 学習: PDFから取り込んだもので、自動推測と最終的な取引先名が違う場合は、
+    // 次回から使えるように「特徴→取引先名」のルールを覚えておく。
+    if ((d.textSignature || d.filenameStem) && vendor && vendor !== (d.guessedVendor || '')){
+      const rules = loadInvoiceVendorRules();
+      const idxRule = rules.findIndex(r=>(d.textSignature && r.textSignature === d.textSignature) || (d.filenameStem && r.filenameStem === d.filenameStem));
+      const rule = { id: idxRule>=0 ? rules[idxRule].id : (Date.now()+'-'+Math.random().toString(36).slice(2,8)), textSignature: d.textSignature||'', filenameStem: d.filenameStem||'', vendor };
+      if (idxRule>=0) rules[idxRule] = rule; else rules.push(rule);
+      saveInvoiceVendorRules(rules);
+    }
     invoiceDraft = null;
     renderInvoicesTab();
   }
@@ -5968,7 +6043,7 @@
       btn.addEventListener('click', ()=>{
         const inv = loadInvoices().find(x=>x.id === btn.dataset.id);
         if (!inv) return;
-        invoiceDraft = { editId: inv.id, fileName: inv.fileName, vendor: inv.vendor, month: inv.month, category: inv.category || '', hasLineItems: inv.hasLineItems, amount: inv.amount, lineItems: (inv.lineItems||[]).map(i=>({...i})), rawTextPreview: '' };
+        invoiceDraft = { editId: inv.id, fileName: inv.fileName, vendor: inv.vendor, guessedVendor: inv.vendor, month: inv.month, category: inv.category || '', hasLineItems: inv.hasLineItems, amount: inv.amount, lineItems: (inv.lineItems||[]).map(i=>({...i, checked: true})), textSignature: '', filenameStem: '', rawTextPreview: '' };
         renderInvoiceDraftForm();
         document.getElementById('invoiceDraftArea').scrollIntoView({ behavior: 'smooth', block: 'center' });
       });
@@ -6171,7 +6246,7 @@
     if (files.length) handleInvoicePdfFile(files[0]);
   });
   document.getElementById('invoiceManualBtn').addEventListener('click', ()=>{
-    invoiceDraft = { editId: null, fileName: '', vendor: '', month: '', category: '', hasLineItems: false, amount: 0, lineItems: [], rawTextPreview: '' };
+    invoiceDraft = { editId: null, fileName: '', vendor: '', guessedVendor: '', month: '', category: '', hasLineItems: false, amount: 0, lineItems: [], textSignature: '', filenameStem: '', rawTextPreview: '' };
     renderInvoiceDraftForm();
   });
   document.getElementById('invoiceMonthFilter').addEventListener('change', (e)=>{
