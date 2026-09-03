@@ -1000,7 +1000,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.23.0";
+  const APP_VERSION = "4.24.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -1046,6 +1046,36 @@
   // 計算で予測する。新規獲得件数・広告費は実績データ／予算管理タブから自動で
   // 算出するため、ここには持たない。
   const PROGRESS_ACTUALS_KEY = 'lagnet_progress_actuals_v1';
+  // 進捗タブの初期値（既存のスプレッドシート「【L】13期※8/25※進捗」の2026年6月・
+  // 7月実績から、商材名の対応表に沿って読み取ったもの）。まだ本人が保存していない
+  // 商材・月にだけ補う（一度でも編集・保存されればそちらを優先し、この値は使わない）。
+  // 商材名の対応: SOLID PERFUME→練り香水／バブルスクラブ→スクラブ／
+  // ヘッドスクラブ→ヘッドスクラブ（実績なしのため未収録）／精力剤980&0円＋
+  // 精力剤1980＆2980→サプリ（合算）／ゼノス→ゼノス／オレンジ・スクラブ・
+  // セット・その他→その他。コストは商材別の内訳がシートに無いため、全社の
+  // 原価＋固定変動費を各商材の売上比率で按分した概算値。
+  const SEED_PROGRESS_ACTUALS = {
+    '練り香水': {
+      '2026-06': { subscriberCount: 4180, churnRate: 15.5, unitPrice: 7752, revenue: 18503692, cost: 8738572 },
+      '2026-07': { subscriberCount: 4190, churnRate: 16.6, unitPrice: 7173, revenue: 18076224, cost: 10004378 }
+    },
+    'スクラブ': {
+      '2026-06': { subscriberCount: 297, churnRate: 10, unitPrice: 6618, revenue: 1052288, cost: 496955 },
+      '2026-07': { subscriberCount: 325, churnRate: 13, unitPrice: 6504, revenue: 1489365, cost: 824297 }
+    },
+    'ゼノス': {
+      '2026-06': { subscriberCount: 15, churnRate: 0, unitPrice: 6493, revenue: 84409, cost: 39863 },
+      '2026-07': { subscriberCount: 17, churnRate: 0, unitPrice: 6028, revenue: 78364, cost: 43371 }
+    },
+    'その他': {
+      '2026-06': { subscriberCount: 103, churnRate: 0, unitPrice: 5379, revenue: 263584, cost: 124480 },
+      '2026-07': { subscriberCount: 0, churnRate: 0, unitPrice: 0, revenue: 0, cost: 0 }
+    },
+    'サプリ': {
+      '2026-06': { subscriberCount: 161, churnRate: 10.1, unitPrice: 9703, revenue: 1119671, cost: 528777 },
+      '2026-07': { subscriberCount: 158, churnRate: 45.7, unitPrice: 9318, revenue: 1276572, cost: 706525 }
+    }
+  };
   // 目標(MIN)・目標(MAX): 数値を変えず固定で持っておく目標値（計算なし、全項目手入力）。
   const TARGET_MIN_KEY = 'lagnet_target_min_v1';
   const TARGET_MAX_KEY = 'lagnet_target_max_v1';
@@ -6173,7 +6203,17 @@
   const AP_MONTHS_TO_SHOW = 24;
 
   function loadProgressActuals(){
-    try{ return JSON.parse(localStorage.getItem(PROGRESS_ACTUALS_KEY) || '{}'); }catch(e){ return {}; }
+    let stored;
+    try{ stored = JSON.parse(localStorage.getItem(PROGRESS_ACTUALS_KEY) || '{}'); }catch(e){ stored = {}; }
+    // SEED_PROGRESS_ACTUALSは、本人がまだ触っていない商材・月にだけ補う参考値。
+    // 一度でも保存されればそちらが優先され、この値は使われなくなる。
+    Object.keys(SEED_PROGRESS_ACTUALS).forEach(cat=>{
+      Object.keys(SEED_PROGRESS_ACTUALS[cat]).forEach(mk=>{
+        if (!stored[cat]) stored[cat] = {};
+        if (!stored[cat][mk]) stored[cat][mk] = SEED_PROGRESS_ACTUALS[cat][mk];
+      });
+    });
+    return stored;
   }
   function saveProgressActuals(obj){
     const json = JSON.stringify(obj);
