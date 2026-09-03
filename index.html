@@ -698,6 +698,13 @@
       <div id="invoiceDraftArea"></div>
     </div>
     <div class="panel">
+      <h2>取引先の自動判定ルール<span class="n">（学習した内容の確認・修正）</span></h2>
+      <div class="note-box">
+        ファイル名の型や本文の特徴から、取引先名・分類を自動で仮入力するために使っているルールです。過去に誤った内容で保存してしまった場合など、ここで削除できます（削除すると、その取引先はまた一から自動判定し直されます）。
+      </div>
+      <div class="table-wrap"><table class="data" id="invoiceVendorRulesTable"></table></div>
+    </div>
+    <div class="panel">
       <h2>読み取り履歴<span class="n" id="invoiceCount"></span></h2>
       <div class="note-box">
         ここに保存されているのは、PDFから抽出した<strong>会社名・年月・金額・分類などのテキスト情報のみ</strong>です（他の端末とも共有されます）。PDFファイル自体はどの端末にも保存されないため、<strong>請求書の実物は各月のGoogle Driveリンクから確認してください</strong>。
@@ -862,7 +869,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.10.0";
+  const APP_VERSION = "4.11.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -6193,7 +6200,35 @@
     });
   }
 
+  // SEEDのデフォルトルールは削除対象にしない（保存されていない仮想的な既定値
+  // のため）。実際に保存されているルールだけを対象に表示・削除する。
+  function loadStoredInvoiceVendorRulesOnly(){
+    try{ return JSON.parse(localStorage.getItem(INVOICE_VENDOR_RULES_KEY) || '[]'); }catch(e){ return []; }
+  }
+  function renderInvoiceVendorRulesTable(){
+    const stored = loadStoredInvoiceVendorRulesOnly();
+    document.getElementById('invoiceVendorRulesTable').innerHTML = `
+      <thead><tr><th>手がかり（ファイル名の型・本文の特徴）</th><th>取引先名</th><th>分類</th><th></th></tr></thead>
+      <tbody>${stored.length ? stored.map(r=>`
+        <tr>
+          <td style="text-align:left;">${escapeHtml(r.filenameStem || r.textSignature || '')}</td>
+          <td style="text-align:left;">${escapeHtml(r.vendor||'')}</td>
+          <td style="text-align:left;">${categoryBadgeHtml(r.category)}</td>
+          <td><button type="button" class="btn small danger js-del-vendor-rule" data-id="${escapeHtml(r.id)}">削除</button></td>
+        </tr>
+      `).join('') : '<tr><td colspan="4" style="text-align:center;color:var(--text-dim);">まだ手直しした学習内容はありません（初期ルールのみ使われています）</td></tr>'}</tbody>
+    `;
+    document.querySelectorAll('.js-del-vendor-rule').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        if (!confirm('このルールを削除しますか？（削除すると、この取引先はまた一から自動判定し直されます）')) return;
+        saveInvoiceVendorRules(loadStoredInvoiceVendorRulesOnly().filter(r=>r.id !== btn.dataset.id));
+        renderInvoiceVendorRulesTable();
+      });
+    });
+  }
+
   function renderInvoicesTab(){
+    renderInvoiceVendorRulesTable();
     renderInvoiceList();
     renderInvoiceDraftForm();
   }
