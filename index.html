@@ -1000,7 +1000,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.24.0";
+  const APP_VERSION = "4.25.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -2117,7 +2117,7 @@
   let ltvSelectedOffer = '';
 
   // 商材タブの表示順序（指定の並びを優先し、リストに無い商材は末尾にアルファベット順で追加）
-  const CATEGORY_DISPLAY_ORDER = ['練り香水','ヘッドスクラブ','サプリ','バブルスクラブ','ゼノス','広告経由なし','その他'];
+  const CATEGORY_DISPLAY_ORDER = ['練り香水','ヘッドスクラブ','サプリ','バブルスクラブ','ゼノス','広告経由なし','練TTS','その他'];
   function sortCategoriesForDisplay(categories){
     const known = CATEGORY_DISPLAY_ORDER.filter(c=>categories.includes(c));
     const unknown = categories.filter(c=>!CATEGORY_DISPLAY_ORDER.includes(c)).sort();
@@ -5874,8 +5874,10 @@
   // として使う（本来の目的である「実績とは関係なく事前に予算だけ入力する」
   // ことも妨げないよう、商材以外は自由入力も許容している＝プルダウンに無い
   // 新しいオファー・代理店もそのまま手入力できる）。
+  // 「練TTS」（TikTokショップ用の広告費）は受注データ上には出てこないが、
+  // 予算管理・進捗・目標タブで商材として選べるように常に候補へ加えておく。
   function bpKnownCategories(records){
-    return sortCategoriesForDisplay(uniqueSorted(records.map(r=>r.category)));
+    return sortCategoriesForDisplay(uniqueSorted(records.map(r=>r.category).concat(['練TTS'])));
   }
   function bpKnownOffersFor(records, category){
     if (!category) return [];
@@ -5985,14 +5987,20 @@
     const records = loadRecords();
     const rows = loadBudgetPlanRows(bpSelectedMonth);
     const totalCapCount = rows.reduce((s, r) => s + (Number(r.capCount) || 0), 0);
-    const totalCost = rows.reduce((s, r) => s + budgetRowCost(r), 0);
-    const avgCpa = totalCapCount > 0 ? totalCost / totalCapCount : NaN;
+    // 「練TTS」（TikTokショップ広告費）は通常の広告費と別枠で集計する。
+    const nonTtsRows = rows.filter(r => r.category !== '練TTS');
+    const ttsRows = rows.filter(r => r.category === '練TTS');
+    const nonTtsCapCount = nonTtsRows.reduce((s, r) => s + (Number(r.capCount) || 0), 0);
+    const totalCost = nonTtsRows.reduce((s, r) => s + budgetRowCost(r), 0);
+    const ttsCost = ttsRows.reduce((s, r) => s + budgetRowCost(r), 0);
+    const avgCpa = nonTtsCapCount > 0 ? totalCost / nonTtsCapCount : NaN;
     const trailing3 = bpTrailing3MonthAdSpend(bpSelectedMonth);
     const trailing3Label = trailing3.months.map((mk,idx)=>`${Number(mk.split('-')[1])}月:${fmtYen(trailing3.values[idx])}`).join(' ／ ');
 
     document.getElementById('bpSummaryKpis').innerHTML = `
       <div class="kpi"><div class="label">当月の上限件数（合計）</div><div class="value">${fmtNum(totalCapCount)}</div></div>
       <div class="kpi"><div class="label">概算広告費（合計）</div><div class="value accent">${fmtYen(totalCost)}</div></div>
+      <div class="kpi"><div class="label">TTS広告費（合計）</div><div class="value accent">${fmtYen(ttsCost)}</div></div>
       <div class="kpi"><div class="label">概算広告費（3ヶ月按分）</div><div class="value accent" id="bpTrailing3Value">${fmtYen(trailing3.amortized)}</div><div class="sub" id="bpTrailing3Sub">${escapeHtml(trailing3Label)}（未入力の月は¥0として計算）</div></div>
       <div class="kpi"><div class="label">概算CPA（全体平均）</div><div class="value">${isFinite(avgCpa) ? fmtYen(avgCpa) : '—'}</div></div>
     `;
@@ -6019,11 +6027,11 @@
         return `<tr data-i="${i}">
           <td><select class="js-bp-category" data-i="${i}">${categoryOpts}</select></td>
           <td><select class="js-bp-offer" data-i="${i}">${offerOpts}</select></td>
-          <td><input type="text" class="js-bp-agency" data-i="${i}" list="bpAgencyList" value="${escapeHtml(r.agency)}" style="width:120px;"></td>
+          <td><input type="text" class="js-bp-agency" data-i="${i}" list="bpAgencyList" value="${escapeHtml(r.agency)}" style="width:170px;"></td>
           <td>
-            <select class="js-bp-mode" data-i="${i}">
-              <option value="affiliate" ${r.mode==='affiliate'?'selected':''}>A: アフィリエイト(成果単価)</option>
-              <option value="budget" ${r.mode==='budget'?'selected':''}>B: 予算運用(平均CPA)</option>
+            <select class="js-bp-mode" data-i="${i}" style="width:80px;">
+              <option value="affiliate" ${r.mode==='affiliate'?'selected':''}>アフィ</option>
+              <option value="budget" ${r.mode==='budget'?'selected':''}>予算</option>
             </select>
           </td>
           <td class="num"><input type="number" class="js-bp-capcount" data-i="${i}" value="${Number(r.capCount)||0}" min="0" style="width:90px;text-align:right;"></td>
@@ -6044,11 +6052,16 @@
       const cell = document.getElementById('bpCostCell'+i);
       if (cell) cell.textContent = fmtYen(budgetRowCost(rows[i]));
       const t = rows.reduce((s, r) => s + (Number(r.capCount) || 0), 0);
-      const c = rows.reduce((s, r) => s + budgetRowCost(r), 0);
-      const a = t > 0 ? c / t : NaN;
+      const nonTts = rows.filter(r => r.category !== '練TTS');
+      const tts = rows.filter(r => r.category === '練TTS');
+      const nonTtsCap = nonTts.reduce((s, r) => s + (Number(r.capCount) || 0), 0);
+      const c = nonTts.reduce((s, r) => s + budgetRowCost(r), 0);
+      const ttsC = tts.reduce((s, r) => s + budgetRowCost(r), 0);
+      const a = nonTtsCap > 0 ? c / nonTtsCap : NaN;
       document.getElementById('bpSummaryKpis').innerHTML = `
         <div class="kpi"><div class="label">当月の上限件数（合計）</div><div class="value">${fmtNum(t)}</div></div>
         <div class="kpi"><div class="label">概算広告費（合計）</div><div class="value accent">${fmtYen(c)}</div></div>
+        <div class="kpi"><div class="label">TTS広告費（合計）</div><div class="value accent">${fmtYen(ttsC)}</div></div>
         <div class="kpi"><div class="label">概算広告費（3ヶ月按分）</div><div class="value accent" id="bpTrailing3Value">${fmtYen(trailing3.amortized)}</div><div class="sub" id="bpTrailing3Sub">${escapeHtml(trailing3Label)}（未入力の月は¥0として計算）</div></div>
         <div class="kpi"><div class="label">概算CPA（全体平均）</div><div class="value">${isFinite(a) ? fmtYen(a) : '—'}</div></div>
       `;
