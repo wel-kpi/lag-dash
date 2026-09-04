@@ -742,8 +742,9 @@
     <div class="panel">
       <h2>予算上限の入力<span class="n">（商材・オファー・代理店ごと）</span></h2>
       <div class="note-box">
-        実績データとは連動しない、事前の入力枠です。方式Aは「上限件数 × 成果単価」、方式Bは「上限件数 × 平均CPA」で概算広告費を計算します。
+        実績データとは連動しない、事前の入力枠です。方式「アフィ」は「上限件数 × 成果単価」、「予算」は「上限件数 × 平均CPA」で概算広告費を計算します。新しい月に切り替えると、直近で入力済みの月の行（商材・オファー・代理店・方式・単価/CPA）をそのまま引き継ぎ、上限件数だけ0にリセットして自動で作成します。過去の月（今月より前）は編集できないバックアップ表示になります。
       </div>
+      <div class="note-box" id="bpPastMonthNotice" style="display:none;color:var(--danger);font-weight:700;">⚠ この月は過去月のため、内容は編集できません（バックアップ表示）。</div>
       <div class="table-wrap"><table class="data" id="bpRowsTable"></table></div>
       <div class="controls" style="margin-top:8px;">
         <button type="button" class="btn small" id="bpRowsAddBtn">＋ 行を追加</button>
@@ -1003,7 +1004,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.26.0";
+  const APP_VERSION = "4.27.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -5844,12 +5845,25 @@
   }
   // monthKeyを含む直近3ヶ月（例: 2026-09なら7,8,9月）の広告費実績の合計を3で割った値。
   // 未入力の月は0として扱う（合計・按分値ともに、その旨をUI側の内訳表示で分かるようにする）。
-  function bpTrailing3MonthAdSpend(monthKey){
+  // currentMonthPlannedCostを渡すと、当月（3ヶ月のうち最後の月）の実績にそれを
+  // 加算する＝予算上限の入力で計算した当月の概算広告費を「当月の広告費」として
+  // 3ヶ月按分に含める（月次広告費実績にまだ確定額が入っていない当月分の代わり）。
+  function bpTrailing3MonthAdSpend(monthKey, currentMonthPlannedCost){
     const spend = loadMonthlyAdSpend();
     const months = [shiftMonthKey(monthKey, -2), shiftMonthKey(monthKey, -1), monthKey];
-    const values = months.map(mk => Number(spend[mk]) || 0);
+    const values = months.map((mk, idx) => {
+      const manual = Number(spend[mk]) || 0;
+      return idx === 2 ? manual + (Number(currentMonthPlannedCost) || 0) : manual;
+    });
     const total = values.reduce((s, v) => s + v, 0);
     return { months, values, total, amortized: total / 3 };
+  }
+  // bpSelectedMonthより前で、直近に入力済みの月（rowsが1件以上ある月）を探す。
+  // 月が変わった時に、その月の行をテンプレートとして引き継ぐために使う。
+  function bpFindPreviousMonthWithRows(monthKey){
+    const plan = loadBudgetPlan();
+    const months = Object.keys(plan).filter(mk => mk < monthKey && plan[mk] && plan[mk].rows && plan[mk].rows.length).sort();
+    return months.length ? months[months.length - 1] : null;
   }
   function defaultBudgetRow(overrides){
     return Object.assign({
@@ -5937,7 +5951,8 @@
   // 入力欄で数値を打っている最中に、予算上限入力テーブルまで作り直して
   // フォーカスを飛ばさないようにするため）。
   function refreshTrailing3Kpi(){
-    const tr = bpTrailing3MonthAdSpend(bpSelectedMonth);
+    const plannedCost = loadBudgetPlanRows(bpSelectedMonth).filter(r=>r.category!=='練TTS').reduce((s,r)=>s+budgetRowCost(r),0);
+    const tr = bpTrailing3MonthAdSpend(bpSelectedMonth, plannedCost);
     const label = tr.months.map((mk,idx)=>`${Number(mk.split('-')[1])}月:${fmtYen(tr.values[idx])}`).join(' ／ ') + '（未入力の月は¥0として計算）';
     const v = document.getElementById('bpTrailing3Value');
     if (v) v.textContent = fmtYen(tr.amortized);
@@ -5988,7 +6003,26 @@
     renderBpMonthlySpendTable();
 
     const records = loadRecords();
-    const rows = loadBudgetPlanRows(bpSelectedMonth);
+    const isPastMonth = bpSelectedMonth < currentMonthKey();
+    let rows = loadBudgetPlanRows(bpSelectedMonth);
+    // 月が変わって、その月にまだ何も入力されていなければ、直近で入力済みの月の
+    // 行（商材・オファー・代理店・方式・単価/CPA）をそのまま引き継ぎ、上限件数
+    // だけ0にリセットして自動生成する（過去月は対象外＝バックアップのみ保持）。
+    if (!rows.length && !isPastMonth){
+      const prevMonth = bpFindPreviousMonthWithRows(bpSelectedMonth);
+      if (prevMonth){
+        rows = loadBudgetPlanRows(prevMonth).map(r => Object.assign({}, r, {
+          id: Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+          capCount: 0,
+          updatedAt: new Date().toISOString()
+        }));
+        saveBudgetPlanRows(bpSelectedMonth, rows);
+      }
+    }
+    const pastMonthNotice = document.getElementById('bpPastMonthNotice');
+    if (pastMonthNotice) pastMonthNotice.style.display = isPastMonth ? '' : 'none';
+    document.getElementById('bpRowsAddBtn').style.display = isPastMonth ? 'none' : '';
+
     // 「練TTS」（TikTokショップ広告費）は広告部門と完全に切り離し、TTS部門として別集計する。
     const nonTtsRows = rows.filter(r => r.category !== '練TTS');
     const ttsRows = rows.filter(r => r.category === '練TTS');
@@ -5998,13 +6032,13 @@
     const ttsCapCount = ttsRows.reduce((s, r) => s + (Number(r.capCount) || 0), 0);
     const ttsCost = ttsRows.reduce((s, r) => s + budgetRowCost(r), 0);
     const ttsCpa = ttsCapCount > 0 ? ttsCost / ttsCapCount : NaN;
-    const trailing3 = bpTrailing3MonthAdSpend(bpSelectedMonth);
+    const trailing3 = bpTrailing3MonthAdSpend(bpSelectedMonth, totalCost);
     const trailing3Label = trailing3.months.map((mk,idx)=>`${Number(mk.split('-')[1])}月:${fmtYen(trailing3.values[idx])}`).join(' ／ ');
 
     document.getElementById('bpSummaryKpis').innerHTML = `
       <div class="kpi"><div class="label">当月の上限件数（合計）</div><div class="value">${fmtNum(nonTtsCapCount)}</div></div>
       <div class="kpi"><div class="label">概算広告費（合計）</div><div class="value accent">${fmtYen(totalCost)}</div></div>
-      <div class="kpi"><div class="label">概算広告費（3ヶ月按分）</div><div class="value accent" id="bpTrailing3Value">${fmtYen(trailing3.amortized)}</div><div class="sub" id="bpTrailing3Sub">${escapeHtml(trailing3Label)}（未入力の月は¥0として計算）</div></div>
+      <div class="kpi"><div class="label">概算広告費（3ヶ月按分）</div><div class="value accent" id="bpTrailing3Value">${fmtYen(trailing3.amortized)}</div><div class="sub" id="bpTrailing3Sub">${escapeHtml(trailing3Label)}（未入力の月は¥0として計算／当月分には予算上限の入力の概算広告費を加算）</div></div>
       <div class="kpi"><div class="label">概算CPA（全体平均）</div><div class="value">${isFinite(avgCpa) ? fmtYen(avgCpa) : '—'}</div></div>
     `;
     document.getElementById('bpTtsSummaryKpis').innerHTML = `
@@ -6025,6 +6059,19 @@
         <th class="num">概算広告費</th><th></th>
       </tr></thead>
       <tbody>${rows.length ? rows.map((r,i)=>{
+        if (isPastMonth){
+          const modeLabel = r.mode==='budget' ? '予算' : 'アフィ';
+          return `<tr data-i="${i}">
+            <td>${escapeHtml(r.category)}</td>
+            <td>${escapeHtml(r.offer)}</td>
+            <td>${escapeHtml(r.agency)}</td>
+            <td>${modeLabel}</td>
+            <td class="num">${fmtNum(Number(r.capCount)||0)}</td>
+            <td class="num">${fmtYen(Number(bpUnitValue(r))||0)}</td>
+            <td class="num">${fmtYen(budgetRowCost(r))}</td>
+            <td></td>
+          </tr>`;
+        }
         const categoryOpts = ['<option value="">（選択）</option>'].concat(
           bpKnownCategories(records).map(c=>`<option value="${escapeHtml(c)}" ${c===r.category?'selected':''}>${escapeHtml(c)}</option>`)
         ).join('');
@@ -6049,6 +6096,8 @@
         </tr>`;
       }).join('') : emptyRow(8)}</tbody>
     `;
+    // 過去月は上の表がプレーンテキストになっており、以下の .js-bp-* 系イベント
+    // 配線は該当要素が存在しないため何も起きない（querySelectorAllが空を返す）。
     // 件数・単価を打っている最中にテーブル全体を作り直すとカーソル/フォーカスが
     // 飛んでしまうため、この2つの入力欄だけは「その行の概算広告費セルと上部
     // サマリーだけをその場で更新し、保存は少し待ってから」という軽い更新に
@@ -6067,10 +6116,12 @@
       const ttsCap = tts.reduce((s, r) => s + (Number(r.capCount) || 0), 0);
       const ttsC = tts.reduce((s, r) => s + budgetRowCost(r), 0);
       const ttsCpaLive = ttsCap > 0 ? ttsC / ttsCap : NaN;
+      const tr = bpTrailing3MonthAdSpend(bpSelectedMonth, c);
+      const trLabel = tr.months.map((mk,idx)=>`${Number(mk.split('-')[1])}月:${fmtYen(tr.values[idx])}`).join(' ／ ');
       document.getElementById('bpSummaryKpis').innerHTML = `
         <div class="kpi"><div class="label">当月の上限件数（合計）</div><div class="value">${fmtNum(nonTtsCap)}</div></div>
         <div class="kpi"><div class="label">概算広告費（合計）</div><div class="value accent">${fmtYen(c)}</div></div>
-        <div class="kpi"><div class="label">概算広告費（3ヶ月按分）</div><div class="value accent" id="bpTrailing3Value">${fmtYen(trailing3.amortized)}</div><div class="sub" id="bpTrailing3Sub">${escapeHtml(trailing3Label)}（未入力の月は¥0として計算）</div></div>
+        <div class="kpi"><div class="label">概算広告費（3ヶ月按分）</div><div class="value accent" id="bpTrailing3Value">${fmtYen(tr.amortized)}</div><div class="sub" id="bpTrailing3Sub">${escapeHtml(trLabel)}（未入力の月は¥0として計算／当月分には予算上限の入力の概算広告費を加算）</div></div>
         <div class="kpi"><div class="label">概算CPA（全体平均）</div><div class="value">${isFinite(a) ? fmtYen(a) : '—'}</div></div>
       `;
       document.getElementById('bpTtsSummaryKpis').innerHTML = `
