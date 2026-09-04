@@ -724,7 +724,10 @@
     <div class="controls">
       <label>対象月 <input type="month" id="bpMonthInput"></label>
     </div>
+    <div style="font-size:12px;font-weight:700;color:var(--text-dim);margin-bottom:6px;">広告部門</div>
     <div class="grid-kpi" id="bpSummaryKpis"></div>
+    <div style="font-size:12px;font-weight:700;color:var(--text-dim);margin:16px 0 6px;">TTS部門<span style="font-weight:400;">（練TTS）</span></div>
+    <div class="grid-kpi" id="bpTtsSummaryKpis"></div>
     <div class="panel">
       <h2>月次広告費実績<span class="n">（マスター・手入力）</span></h2>
       <div class="note-box">
@@ -1000,7 +1003,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.25.0";
+  const APP_VERSION = "4.26.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -5986,23 +5989,28 @@
 
     const records = loadRecords();
     const rows = loadBudgetPlanRows(bpSelectedMonth);
-    const totalCapCount = rows.reduce((s, r) => s + (Number(r.capCount) || 0), 0);
-    // 「練TTS」（TikTokショップ広告費）は通常の広告費と別枠で集計する。
+    // 「練TTS」（TikTokショップ広告費）は広告部門と完全に切り離し、TTS部門として別集計する。
     const nonTtsRows = rows.filter(r => r.category !== '練TTS');
     const ttsRows = rows.filter(r => r.category === '練TTS');
     const nonTtsCapCount = nonTtsRows.reduce((s, r) => s + (Number(r.capCount) || 0), 0);
     const totalCost = nonTtsRows.reduce((s, r) => s + budgetRowCost(r), 0);
-    const ttsCost = ttsRows.reduce((s, r) => s + budgetRowCost(r), 0);
     const avgCpa = nonTtsCapCount > 0 ? totalCost / nonTtsCapCount : NaN;
+    const ttsCapCount = ttsRows.reduce((s, r) => s + (Number(r.capCount) || 0), 0);
+    const ttsCost = ttsRows.reduce((s, r) => s + budgetRowCost(r), 0);
+    const ttsCpa = ttsCapCount > 0 ? ttsCost / ttsCapCount : NaN;
     const trailing3 = bpTrailing3MonthAdSpend(bpSelectedMonth);
     const trailing3Label = trailing3.months.map((mk,idx)=>`${Number(mk.split('-')[1])}月:${fmtYen(trailing3.values[idx])}`).join(' ／ ');
 
     document.getElementById('bpSummaryKpis').innerHTML = `
-      <div class="kpi"><div class="label">当月の上限件数（合計）</div><div class="value">${fmtNum(totalCapCount)}</div></div>
+      <div class="kpi"><div class="label">当月の上限件数（合計）</div><div class="value">${fmtNum(nonTtsCapCount)}</div></div>
       <div class="kpi"><div class="label">概算広告費（合計）</div><div class="value accent">${fmtYen(totalCost)}</div></div>
-      <div class="kpi"><div class="label">TTS広告費（合計）</div><div class="value accent">${fmtYen(ttsCost)}</div></div>
       <div class="kpi"><div class="label">概算広告費（3ヶ月按分）</div><div class="value accent" id="bpTrailing3Value">${fmtYen(trailing3.amortized)}</div><div class="sub" id="bpTrailing3Sub">${escapeHtml(trailing3Label)}（未入力の月は¥0として計算）</div></div>
       <div class="kpi"><div class="label">概算CPA（全体平均）</div><div class="value">${isFinite(avgCpa) ? fmtYen(avgCpa) : '—'}</div></div>
+    `;
+    document.getElementById('bpTtsSummaryKpis').innerHTML = `
+      <div class="kpi"><div class="label">当月の上限件数（合計）</div><div class="value">${fmtNum(ttsCapCount)}</div></div>
+      <div class="kpi"><div class="label">TTS広告費（合計）</div><div class="value accent">${fmtYen(ttsCost)}</div></div>
+      <div class="kpi"><div class="label">TTS CPA（平均）</div><div class="value">${isFinite(ttsCpa) ? fmtYen(ttsCpa) : '—'}</div></div>
     `;
 
     function persistRows(){ saveBudgetPlanRows(bpSelectedMonth, rows); }
@@ -6051,19 +6059,24 @@
     function refreshRowCostAndSummary(i){
       const cell = document.getElementById('bpCostCell'+i);
       if (cell) cell.textContent = fmtYen(budgetRowCost(rows[i]));
-      const t = rows.reduce((s, r) => s + (Number(r.capCount) || 0), 0);
       const nonTts = rows.filter(r => r.category !== '練TTS');
       const tts = rows.filter(r => r.category === '練TTS');
       const nonTtsCap = nonTts.reduce((s, r) => s + (Number(r.capCount) || 0), 0);
       const c = nonTts.reduce((s, r) => s + budgetRowCost(r), 0);
-      const ttsC = tts.reduce((s, r) => s + budgetRowCost(r), 0);
       const a = nonTtsCap > 0 ? c / nonTtsCap : NaN;
+      const ttsCap = tts.reduce((s, r) => s + (Number(r.capCount) || 0), 0);
+      const ttsC = tts.reduce((s, r) => s + budgetRowCost(r), 0);
+      const ttsCpaLive = ttsCap > 0 ? ttsC / ttsCap : NaN;
       document.getElementById('bpSummaryKpis').innerHTML = `
-        <div class="kpi"><div class="label">当月の上限件数（合計）</div><div class="value">${fmtNum(t)}</div></div>
+        <div class="kpi"><div class="label">当月の上限件数（合計）</div><div class="value">${fmtNum(nonTtsCap)}</div></div>
         <div class="kpi"><div class="label">概算広告費（合計）</div><div class="value accent">${fmtYen(c)}</div></div>
-        <div class="kpi"><div class="label">TTS広告費（合計）</div><div class="value accent">${fmtYen(ttsC)}</div></div>
         <div class="kpi"><div class="label">概算広告費（3ヶ月按分）</div><div class="value accent" id="bpTrailing3Value">${fmtYen(trailing3.amortized)}</div><div class="sub" id="bpTrailing3Sub">${escapeHtml(trailing3Label)}（未入力の月は¥0として計算）</div></div>
         <div class="kpi"><div class="label">概算CPA（全体平均）</div><div class="value">${isFinite(a) ? fmtYen(a) : '—'}</div></div>
+      `;
+      document.getElementById('bpTtsSummaryKpis').innerHTML = `
+        <div class="kpi"><div class="label">当月の上限件数（合計）</div><div class="value">${fmtNum(ttsCap)}</div></div>
+        <div class="kpi"><div class="label">TTS広告費（合計）</div><div class="value accent">${fmtYen(ttsC)}</div></div>
+        <div class="kpi"><div class="label">TTS CPA（平均）</div><div class="value">${isFinite(ttsCpaLive) ? fmtYen(ttsCpaLive) : '—'}</div></div>
       `;
     }
     document.getElementById('bpRowsAddBtn').onclick = ()=>{
