@@ -1041,7 +1041,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.40.0";
+  const APP_VERSION = "4.41.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -7349,10 +7349,10 @@
     const startIdx = all.findIndex(({ text }) => /lagnet\.jp/i.test(text));
     const targetLines = startIdx === -1 ? all : all.slice(startIdx + 1);
     const rawItems = extractLineItems(targetLines, taxInclusive);
-    // ma/bi（ecforce ma・ecforce biを含む項目）を1つに合算し、それ以外
-    // （ecforce efoを含む項目や通常の項目）は全て「それ以外の合計」にまとめる。
-    // 「それ以外の合計」＝請求書全体の合計からma/bi合計を差し引いた金額と一致する。
-    let biMa = 0, other = 0;
+    // ma/bi（ecforce ma・ecforce biを含む項目）を1つに合算し、efo（ecforce efo
+    // を含む項目）を別に合算、それ以外の通常項目を「それ以外の合計」にまとめる。
+    // 「それ以外の合計」＝請求書全体の合計からma/bi合計・efo合計を差し引いた金額。
+    let biMa = 0, efo = 0, other = 0;
     let currentContext = null; // 直近に見つけたキーワード（'bi'|'ma'|'efo'|null）
     rawItems.forEach(item=>{
       const kw = superStudioKeywordIn(item.label);
@@ -7367,11 +7367,13 @@
         currentContext = null;
       }
       if (target === 'bi' || target === 'ma') biMa += item.amount;
-      else other += item.amount; // efo・その他すべて
+      else if (target === 'efo') efo += item.amount;
+      else other += item.amount;
     });
     const mk = (label, amount) => ({ id: Date.now()+'-'+Math.random().toString(36).slice(2,8)+'-'+label, label, amount, category:'', product:'', checked: true });
     return [
       mk('ma/biの合計', biMa),
+      mk('efoの合計', efo),
       mk('それ以外の合計', other)
     ];
   }
