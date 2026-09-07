@@ -1007,7 +1007,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.32.0";
+  const APP_VERSION = "4.33.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -3563,8 +3563,8 @@
     document.getElementById('ltvRetentionTable').innerHTML = `
       <thead><tr><th>種別</th>${cycleCols.map(c=>`<th class="num">${c==='rest'?`${LTV_EXPLICIT_CYCLES+1}回目以降`:c+'回目'}</th>`).join('')}</tr></thead>
       <tbody>
-        <tr><td style="text-align:left;">フロント</td>${cycleCols.map((c,i)=>`<td class="num"><input type="number" class="ltv-retention-input" data-type="front" data-cycle="${c}" data-tuid="${i+1}" value="${(retentionInfo.frontRetention[c]!=null? (retentionInfo.frontRetention[c]*100).toFixed(0) : '')}" placeholder="%" style="width:56px;text-align:right;"></td>`).join('')}</tr>
-        <tr><td style="text-align:left;">アップセル</td>${cycleCols.map((c,i)=>`<td class="num"><input type="number" class="ltv-retention-input" data-type="upsell" data-cycle="${c}" data-tuid="${cycleCols.length+i+1}" value="${(retentionInfo.upsellRetention[c]!=null? (retentionInfo.upsellRetention[c]*100).toFixed(0) : '')}" placeholder="%" style="width:56px;text-align:right;"></td>`).join('')}</tr>
+        <tr><td style="text-align:left;">フロント</td>${cycleCols.map((c,i)=>`<td class="num"><input type="number" class="ltv-retention-input" data-type="front" data-cycle="${c}" data-tuid="${i*2+1}" value="${(retentionInfo.frontRetention[c]!=null? (retentionInfo.frontRetention[c]*100).toFixed(0) : '')}" placeholder="%" style="width:56px;text-align:right;"></td>`).join('')}</tr>
+        <tr><td style="text-align:left;">アップセル</td>${cycleCols.map((c,i)=>`<td class="num"><input type="number" class="ltv-retention-input" data-type="upsell" data-cycle="${c}" data-tuid="${i*2+2}" value="${(retentionInfo.upsellRetention[c]!=null? (retentionInfo.upsellRetention[c]*100).toFixed(0) : '')}" placeholder="%" style="width:56px;text-align:right;"></td>`).join('')}</tr>
       </tbody>
     `;
     function ensureMonthRetentionEntry(all){
@@ -3589,7 +3589,6 @@
     // ブラウザ標準のTab移動が上のタブなど無関係な場所に飛んでしまうのを防ぐ）。
     let ltvSettingsRetentionFocusTuid = null;
     document.querySelectorAll('.ltv-retention-input').forEach(inp=>{
-      let t=null;
       inp.addEventListener('focus', ()=>{ ltvSettingsRetentionFocusTuid = Number(inp.dataset.tuid); });
       function commit(){
         const all = loadLtvSettings();
@@ -3602,8 +3601,10 @@
         renderLtvTab();
         restoreLtvRetentionFocus('.ltv-retention-input', ltvSettingsRetentionFocusTuid);
       }
-      inp.addEventListener('input', ()=>{ clearTimeout(t); t=setTimeout(commit, 500); });
-      inp.addEventListener('change', ()=>{ clearTimeout(t); commit(); });
+      // 自動保存（入力中の500ms debounceでの再描画）はやめ、確定（blur/Tabで
+      // 移動した時）だけ保存・再描画する。Tabキーで連続入力している最中に
+      // 途中で再描画が挟まってフォーカスが飛ぶ不具合を避けるため。
+      inp.addEventListener('change', commit);
     });
     document.getElementById('ltvRetentionSetDefaultBtn').addEventListener('click', ()=>{
       if (!confirm(`今表示中の継続率を、商材「${ltvSelectedCategory}」共通のデフォルト値として保存します。よろしいですか？`)) return;
@@ -3689,6 +3690,7 @@
     function renderExtraProducts(){
       const extraProductOfferKey = ltvSelectedOffer || '';
       const list = getOfferExtraProducts(ltvSelectedCategory, extraProductOfferKey);
+      let ltvExtraProductRetentionFocusTuid = null;
       const cycleColsEp = [];
       for (let c=2;c<=LTV_EXPLICIT_CYCLES;c++) cycleColsEp.push(String(c));
       cycleColsEp.push('rest');
@@ -3699,7 +3701,7 @@
         </div>
       `;
 
-      document.getElementById('ltvExtraProductsArea').innerHTML = list.map(ep=>{
+      document.getElementById('ltvExtraProductsArea').innerHTML = list.map((ep, productIndex)=>{
         const liveCount = ep.productCode ? extraProductInitialCountForMonth(ep, ltvSelectedMonth) : null;
         return `
         <div class="panel" style="background:var(--bg-panel-2);margin-bottom:12px;" data-ep-id="${escapeHtml(ep.id)}">
@@ -3726,7 +3728,7 @@
           <div class="table-wrap">
             <table class="data">
               <thead><tr><th>継続率</th>${cycleColsEp.map(c=>`<th class="num">${c==='rest'?`${LTV_EXPLICIT_CYCLES+1}回目以降`:c+'回目'}</th>`).join('')}</tr></thead>
-              <tbody><tr><td style="text-align:left;">%</td>${cycleColsEp.map(c=>`<td class="num"><input type="number" class="ep-retention" data-id="${escapeHtml(ep.id)}" data-cycle="${c}" value="${(ep.retention&&ep.retention[c]!=null?(ep.retention[c]*100).toFixed(0):'')}" placeholder="%" style="width:52px;text-align:right;"></td>`).join('')}</tr></tbody>
+              <tbody><tr><td style="text-align:left;">%</td>${cycleColsEp.map((c,cycleIndex)=>`<td class="num"><input type="number" class="ep-retention" data-id="${escapeHtml(ep.id)}" data-cycle="${c}" data-tuid="${cycleIndex*list.length+productIndex+1}" value="${(ep.retention&&ep.retention[c]!=null?(ep.retention[c]*100).toFixed(0):'')}" placeholder="%" style="width:52px;text-align:right;"></td>`).join('')}</tr></tbody>
             </table>
           </div>
         </div>
@@ -3773,8 +3775,11 @@
       document.querySelectorAll('.ep-intervals').forEach(inp=>{
         inp.addEventListener('change', ()=>{ commitEp(inp.dataset.id, { intervals: parseIntervalsInput(inp.value) }); renderLtvTab(); });
       });
+      // 継続率設定の本体テーブルと同じ理由（Tabキーで連続入力できるように）で、
+      // 自動保存はせず確定（blur/Tabで移動した時）だけ保存・再描画し、
+      // 次のtuidの欄へ手動でフォーカスを戻す。
       document.querySelectorAll('.ep-retention').forEach(inp=>{
-        let t=null;
+        inp.addEventListener('focus', ()=>{ ltvExtraProductRetentionFocusTuid = Number(inp.dataset.tuid); });
         function commit(){
           withOfferExtraProducts(arr=>{
             const item = arr.find(x=>x.id===inp.dataset.id);
@@ -3785,9 +3790,9 @@
             }
           });
           renderLtvTab();
+          restoreLtvRetentionFocus('.ep-retention', ltvExtraProductRetentionFocusTuid);
         }
-        inp.addEventListener('input', ()=>{ clearTimeout(t); t=setTimeout(commit,500); });
-        inp.addEventListener('change', ()=>{ clearTimeout(t); commit(); });
+        inp.addEventListener('change', commit);
       });
       document.querySelectorAll('.ep-del').forEach(btn=>{
         btn.addEventListener('click', ()=>{
