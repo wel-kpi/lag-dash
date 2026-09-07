@@ -1041,7 +1041,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.35.0";
+  const APP_VERSION = "4.36.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -7276,7 +7276,11 @@
   // 末尾の金額を拾い、「合計」「小計」などの集計行・振込先/登録番号/電話番号
   // などの行は明細ではないので除外する。項目名はその行から金額部分を除いた
   // 残りのテキストとする。分類は初期状態では未指定（＝全体設定を引き継ぐ）。
-  const LINE_ITEM_EXCLUDE_RE = /合計|小計|消費税|残高|割引|ページ|請求|税抜|税込|振込|備考|手数料|口座|登録番号|TEL|FAX|〒|銀行|支店|[%％]/i;
+  // 「手数料」「ページ」は元々もっと広くマッチさせていたが、実在の請求書
+  // （リバライズ）で「〜運用手数料」「ページ高速化ツール」という正規の明細行
+  // まで除外してしまい、11行中6行が消える不具合があった。振込/決済まわりの
+  // 手数料の集計行と、ページ番号（「1/2 ページ」等）だけに絞る。
+  const LINE_ITEM_EXCLUDE_RE = /合計|小計|消費税|残高|割引|請求|税抜|税込|振込|決済手数料|備考|口座|登録番号|TEL|FAX|〒|銀行|支店|ページ\s*[0-9０-９]|[0-9０-９]\s*\/\s*[0-9０-９]+\s*ページ|[%％]/i;
   function extractLineItems(lines, taxInclusive){
     const items = [];
     (lines || []).forEach(({ text })=>{
