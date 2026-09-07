@@ -1004,7 +1004,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.28.0";
+  const APP_VERSION = "4.29.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -6702,20 +6702,29 @@
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
     let fullText = '';
     const lines = [];
+    // 同じ行内の文字でも、PDFによってはY座標が1〜2pt程度ずれていることがある。
+    // 以前はY座標を整数に丸めて完全一致でグルーピングしていたため、そのずれで
+    // 同じ行が複数行に分裂し、項目名の一部の文字だけが金額と同じ行に残って
+    // 「項目名がラしか出ない」ような表示になる不具合があった。ここではY座標が
+    // 近い（許容誤差以内の）文字同士をまとめる方式に変更している。
+    const Y_TOLERANCE = 2;
     for (let p = 1; p <= pdf.numPages; p++){
       const page = await pdf.getPage(p);
       const content = await page.getTextContent();
-      const rowMap = {};
-      content.items.forEach(item=>{
-        const y = Math.round(item.transform[5]);
-        const key = p + '_' + y;
-        if (!rowMap[key]) rowMap[key] = { y, parts: [] };
-        // x座標・幅も持っておき、後で横方向の隙間から単語の区切り（スペース）
-        // を復元する（列が離れているのに文字だけ連結されて数字が誤って
-        // くっついてしまうのを防ぐため）。
-        rowMap[key].parts.push({ x: item.transform[4], w: item.width || 0, str: item.str });
-      });
-      Object.values(rowMap).sort((a,b)=> b.y - a.y).forEach(row=>{
+      const rows = []; // { y, parts: [] }
+      content.items
+        .slice()
+        .sort((a,b)=> b.transform[5] - a.transform[5])
+        .forEach(item=>{
+          const y = item.transform[5];
+          let row = rows.find(r => Math.abs(r.y - y) <= Y_TOLERANCE);
+          if (!row){ row = { y, parts: [] }; rows.push(row); }
+          // x座標・幅も持っておき、後で横方向の隙間から単語の区切り（スペース）
+          // を復元する（列が離れているのに文字だけ連結されて数字が誤って
+          // くっついてしまうのを防ぐため）。
+          row.parts.push({ x: item.transform[4], w: item.width || 0, str: item.str });
+        });
+      rows.forEach(row=>{
         const sorted = row.parts.slice().sort((a,b)=> a.x - b.x);
         let text = '';
         let prevEnd = null;
@@ -6956,18 +6965,43 @@
   let invoiceQueueDone = 0;    // ここまでに処理した件数（進捗表示用）
   let invoiceQueueTotal = 0;   // 今回のバッチの総件数（0 = 一括取り込み中ではない）
 
-  // 直前のドラフトが持っていたPDFプレビュー用URLを解放する（メモリリーク防止）。
-  function revokeInvoiceDraftPreview(){
-    if (invoiceDraft && invoiceDraft.previewUrl){
-      try{ URL.revokeObjectURL(invoiceDraft.previewUrl); }catch(e){}
+  // 以前はプレビューにBlob URL＋<iframe>を使っていたが、ブラウザによっては
+  // ブラウザ内蔵のPDFビューアーが有効でない環境でアイコン表示のまま開けない
+  // ことがあったため、pdf.jsで直接ページをcanvasに描画する方式に変更した
+  // （そのため、もうBlob URLの解放は不要）。
+  function revokeInvoiceDraftPreview(){}
+
+  // 添付PDFの各ページをcanvasに描画してプレビュー欄に表示する。iframe＋Blob URL
+  // に頼らないため、ブラウザ内蔵のPDFビューアーが無効な環境でも確実に表示できる。
+  async function renderPdfPreviewCanvases(file, containerEl){
+    if (!containerEl || !file) return;
+    containerEl.innerHTML = '<p class="n">プレビューを読み込み中…</p>';
+    try{
+      const buf = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+      containerEl.innerHTML = '';
+      for (let p = 1; p <= pdf.numPages; p++){
+        const page = await pdf.getPage(p);
+        const viewport = page.getViewport({ scale: 1.3 });
+        const canvas = document.createElement('canvas');
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        canvas.style.width = '100%';
+        canvas.style.marginBottom = '8px';
+        canvas.style.border = '1px solid var(--border)';
+        canvas.style.borderRadius = '8px';
+        canvas.style.display = 'block';
+        containerEl.appendChild(canvas);
+        await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+      }
+    }catch(err){
+      containerEl.innerHTML = '<p class="n">プレビューの表示に失敗しました。</p>';
     }
   }
 
   async function handleInvoicePdfFile(file){
-    revokeInvoiceDraftPreview();
     const statusEl = document.getElementById('invoiceParseStatus');
     if (statusEl) statusEl.textContent = '解析中…';
-    const previewUrl = (()=>{ try{ return URL.createObjectURL(file); }catch(e){ return ''; } })();
     const queueInfo = invoiceQueueTotal > 1 ? { index: invoiceQueueDone, total: invoiceQueueTotal } : null;
     try{
       const buf = await file.arrayBuffer();
@@ -6996,10 +7030,10 @@
       invoiceDraft = {
         editId: null, fileName: file.name, vendor, guessedVendor, month, category: hints.category, hasLineItems, amount, lineItems,
         textSignature: firstMeaningfulLine(text), filenameStem: filenameStemKey(file.name),
-        rawTextPreview: text.slice(0, 3000), previewUrl, queueInfo
+        rawTextPreview: text.slice(0, 3000), previewFile: file, queueInfo
       };
     }catch(err){
-      invoiceDraft = { editId: null, fileName: file.name, vendor: file.name.replace(/\.pdf$/i, ''), guessedVendor: '', month: '', category: '', hasLineItems: false, amount: 0, lineItems: [], textSignature: '', filenameStem: '', rawTextPreview: '', previewUrl, queueInfo };
+      invoiceDraft = { editId: null, fileName: file.name, vendor: file.name.replace(/\.pdf$/i, ''), guessedVendor: '', month: '', category: '', hasLineItems: false, amount: 0, lineItems: [], textSignature: '', filenameStem: '', rawTextPreview: '', previewFile: file, queueInfo };
       alert('PDFの自動解析に失敗しました。内容を手動で入力してください。（' + ((err && err.message) || err) + '）');
     }
     if (statusEl) statusEl.textContent = '';
@@ -7065,14 +7099,15 @@
               <button class="btn primary" id="draftSaveBtn">${saveBtnLabel}</button>
             </div>
           </div>
-          ${d.previewUrl ? `<div style="flex:1 1 320px;min-width:280px;">
+          ${d.previewFile ? `<div style="flex:1 1 320px;min-width:280px;">
             <div class="n" style="margin-bottom:4px;">添付PDFのプレビュー（読み取り結果と見比べてご確認ください）</div>
-            <iframe src="${escapeHtml(d.previewUrl)}" style="width:100%;height:600px;border:1px solid var(--border);border-radius:8px;background:#fff;"></iframe>
+            <div id="draftPdfPreviewCanvas" style="max-height:600px;overflow:auto;"></div>
           </div>` : ''}
         </div>
       </div>
     `;
     renderDraftAmountArea();
+    if (d.previewFile) renderPdfPreviewCanvases(d.previewFile, document.getElementById('draftPdfPreviewCanvas'));
     document.getElementById('draftCategory').addEventListener('change', (e)=>{
       invoiceDraft.category = e.target.value;
       if (invoiceDraft.hasLineItems) renderDraftAmountArea(); // 全体設定を引き継ぐ表示を更新
@@ -7331,7 +7366,7 @@
         const inv = loadInvoices().find(x=>x.id === btn.dataset.id);
         if (!inv) return;
         revokeInvoiceDraftPreview();
-        invoiceDraft = { editId: inv.id, fileName: inv.fileName, vendor: inv.vendor, guessedVendor: inv.vendor, month: inv.month, category: inv.category || '', hasLineItems: inv.hasLineItems, amount: inv.amount, lineItems: (inv.lineItems||[]).map(i=>({...i, checked: true})), textSignature: '', filenameStem: '', rawTextPreview: '', previewUrl: '', queueInfo: null };
+        invoiceDraft = { editId: inv.id, fileName: inv.fileName, vendor: inv.vendor, guessedVendor: inv.vendor, month: inv.month, category: inv.category || '', hasLineItems: inv.hasLineItems, amount: inv.amount, lineItems: (inv.lineItems||[]).map(i=>({...i, checked: true})), textSignature: '', filenameStem: '', rawTextPreview: '', previewFile: null, queueInfo: null };
         renderInvoiceDraftForm();
         document.getElementById('invoiceDraftArea').scrollIntoView({ behavior: 'smooth', block: 'center' });
       });
@@ -7573,7 +7608,7 @@
   });
   document.getElementById('invoiceManualBtn').addEventListener('click', ()=>{
     revokeInvoiceDraftPreview();
-    invoiceDraft = { editId: null, fileName: '', vendor: '', guessedVendor: '', month: '', category: '', hasLineItems: false, amount: 0, lineItems: [], textSignature: '', filenameStem: '', rawTextPreview: '', previewUrl: '', queueInfo: null };
+    invoiceDraft = { editId: null, fileName: '', vendor: '', guessedVendor: '', month: '', category: '', hasLineItems: false, amount: 0, lineItems: [], textSignature: '', filenameStem: '', rawTextPreview: '', previewFile: null, queueInfo: null };
     renderInvoiceDraftForm();
   });
   document.getElementById('invoiceMonthFilter').addEventListener('change', (e)=>{
