@@ -1041,7 +1041,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.41.0";
+  const APP_VERSION = "4.42.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -7378,6 +7378,43 @@
     ];
   }
 
+  // 共栄物流の請求書は「ゼノス分」「ラグネット分」の2ブランド分が1つのPDFの
+  // 複数ページ（1枚目＝ゼノス分の請求明細＋2枚目＝その運賃明細、3枚目＝
+  // ラグネット分の請求明細＋4枚目＝その運賃明細）にまたがって記載されており、
+  // 各ブランドごとに項目名は同じでも金額が別々になっている。ブランド単位の
+  // 内訳は不要で、2ブランド合計の「送料費」「資材費」「作業用」の3つだけを
+  // 毎月計上したいという要望のため、PDF全体のテキストから各小計ラベルを
+  // 正規表現で拾い、ブランドをまたいで合算する。
+  function isKyoeiVendor(vendor, text){
+    const t = String(vendor||'') + ' ' + String(text||'');
+    return t.includes('共栄物流') || t.includes('キョウエイ');
+  }
+  function extractKyoeiLineItems(text){
+    const sumAll = (pattern) => {
+      const re = new RegExp(pattern, 'g');
+      let total = 0, m;
+      while ((m = re.exec(text))){ total += parseYenAmount(m[1]) || 0; }
+      return total;
+    };
+    // ラベルと金額の間の空白は同じ行内（改行なし）のみ許可する。¥も必須にする
+    // （そうしないと、次の行にある無関係な数字（集計期間の年号など）まで
+    // 誤って金額として拾ってしまうことがある）。
+    // 「運賃合計」＝送料費、「資材費合計」＝資材費（いずれもブランドごとに1回ずつ出現）。
+    const freight = sumAll('運賃合計[ \\t]*¥([\\d,]+)');
+    const material = sumAll('資材費合計[ \\t]*¥([\\d,]+)');
+    // 「作業用」＝保管料・作業スペース料のブランド別小計（【ゼノス分】【ラグネット分】）
+    // と、追加作業の「作業料合計」を合わせたもの。
+    const brandSubtotal = sumAll('【[^】]+分】[ \\t]*¥([\\d,]+)');
+    const laborTotal = sumAll('作業料合計[ \\t]*¥([\\d,]+)');
+    const labor = brandSubtotal + laborTotal;
+    const mk = (label, amount) => ({ id: Date.now()+'-'+Math.random().toString(36).slice(2,8)+'-'+label, label, amount, category:'', product:'', checked: true });
+    return [
+      mk('送料費の合計', freight),
+      mk('資材費の合計', material),
+      mk('作業用の合計', labor)
+    ];
+  }
+
   let invoiceDraft = null;
   let invoiceMonthFilter = '';
   // フォルダ／複数選択で取り込んだ時に、1件ずつ順番に確認していくための待ち行列。
@@ -7484,8 +7521,11 @@
       // （＝別ブランド分が混在している）と判定できた場合にデフォルトでON。
       const knownProducts = uniqueSorted(loadRecords().map(r=>r.category)).filter(Boolean);
       // SUPER STUDIOだけは1行ずつ展開せず、lagnet.jp以下をBI/MA/それ以外の3行に集計する。
+      // 共栄物流はゼノス分・ラグネット分の2ブランド合計を送料費/資材費/作業用の3行に集計する。
       const lineItems = isSuperStudioVendor(vendor, text)
         ? extractSuperStudioLineItems(lines, taxInclusive).map(item=>({ ...item, product: guessLineItemProduct(item.label, knownProducts) }))
+        : isKyoeiVendor(vendor, text)
+        ? extractKyoeiLineItems(text).map(item=>({ ...item, product: guessLineItemProduct(item.label, knownProducts) }))
         : extractLineItems(lines, taxInclusive).map(item=>({
             ...item,
             product: guessLineItemProduct(item.label, knownProducts),
