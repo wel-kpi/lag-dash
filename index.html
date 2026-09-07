@@ -1041,7 +1041,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.37.0";
+  const APP_VERSION = "4.38.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -7286,12 +7286,18 @@
     (lines || []).forEach(({ text })=>{
       if (LINE_ITEM_EXCLUDE_RE.test(text)) return;
       const norm = zenkakuToHankaku(text);
-      const m = norm.match(/(¥?[0-9,]{3,})\s*円?\s*$/);
+      // 先頭のハイフンは「特別値引」のようなマイナス金額（例: -5,000）を
+      // 拾うために許容する（無いと値引き行がプラスの金額として計上されてしまう）。
+      const m = norm.match(/(-?¥?[0-9,]{3,})\s*円?\s*$/);
       if (!m) return;
+      // 桁区切りのカンマの直後で改行され、その断片だけ（例:「…顧客DB数 75,」の
+      // 「75,」）が行末に来たものは金額ではないので除外する（実際の金額表記が
+      // カンマで終わることはない）。
+      if (m[1].endsWith(',')) return;
       // 電話番号・郵便番号・銀行口座番号・登録番号など、カンマ区切りされていない
       // 4桁以上の数字の並びは金額ではない可能性が高いので除外する（実際の金額は
       // 日本語表記なら4桁以上は必ずカンマ区切りになるため）。
-      const rawDigits = m[1].replace(/[¥,]/g, '');
+      const rawDigits = m[1].replace(/[¥,\-]/g, '');
       if (rawDigits.length >= 4 && !m[1].includes(',')) return;
       let amt = parseYenAmount(m[1]);
       if (!amt) return;
@@ -7304,28 +7310,69 @@
   function isTaxInclusiveText(text){ return /内税/.test(text); }
 
   // SUPER STUDIOの請求書は品目数が非常に多いため、1行ずつ品目化せず、
-  // 「lagnet.jp」の行より下だけを対象に、項目名に「BI」を含むもの・「MA」を
-  // 含むもの・それ以外の3グループに金額を集計した3行だけを返す。
+  // 「lagnet.jp」の行より下だけを対象に、項目名の「ecforce bi」「ecforce ma」
+  // 「ecforce efo」（実際の請求書で確認したNo.59〜61／55〜58／52〜54に相当）
+  // を含むものと、それ以外（No.33〜51相当：bi/ma/efoの付かないecforce基本
+  // 機能・Amazon Pay・CS機能など）の4グループに金額を集計した4行だけを返す。
+  // 以前は単に「BI」「MA」という短い文字列だけで判定していたため、efoが
+  // その他に混ざってしまう上、他の項目名にたまたま含まれるリスクもあった。
   function isSuperStudioVendor(vendor, text){
     const t = (String(vendor||'') + ' ' + String(text||'')).toUpperCase();
     return t.includes('SUPER STUDIO') || t.includes('スーパースタジオ');
+  }
+  // ecforce bi/ma/efo キーワードの判定（全角スペース・連続スペースを正規化
+  // してから見る＝PDFの座標復元で「ecforce　bi」のように余分な空白が混ざる
+  // ことがあるため）。
+  function superStudioKeywordIn(text){
+    const norm = zenkakuToHankaku(text).toLowerCase().replace(/\s+/g, ' ');
+    if (norm.includes('ecforce bi')) return 'bi';
+    if (norm.includes('ecforce ma')) return 'ma';
+    if (norm.includes('ecforce efo')) return 'efo';
+    return null;
+  }
+  // SUPER STUDIOの請求書は「摘要」欄が長いと2〜3行に折り返され、しかも金額の
+  // 行が折り返した説明文の途中（1〜2行目の間）に挟まって表示されることが
+  // あるため、金額の行だけを見ても項目名（ecforce bi/ma/efoを含むか）が
+  // わからないことがある。No./日付/数量/単価しか無い「見出しの無い」金額行は、
+  // 直前に出てきた説明文（＝直近のキーワード文脈）に属するものとして扱う。
+  function superStudioIsHeadlessLabel(label){
+    const stripped = zenkakuToHankaku(String(label||''))
+      .replace(/\d{4}-\d{2}-\d{2}/g, '')
+      .replace(/[0-9,.\-]+/g, '')
+      .replace(/(式|件|通|CV|セグメント|円)/g, '')
+      .replace(/\s+/g, '')
+      .trim();
+    return stripped.length === 0;
   }
   function extractSuperStudioLineItems(lines, taxInclusive){
     const all = lines || [];
     const startIdx = all.findIndex(({ text }) => /lagnet\.jp/i.test(text));
     const targetLines = startIdx === -1 ? all : all.slice(startIdx + 1);
     const rawItems = extractLineItems(targetLines, taxInclusive);
-    let bi = 0, ma = 0, other = 0;
+    let bi = 0, ma = 0, efo = 0, other = 0;
+    let currentContext = null; // 直近に見つけたキーワード（'bi'|'ma'|'efo'|null）
     rawItems.forEach(item=>{
-      const upper = item.label.toUpperCase();
-      if (upper.includes('BI')) bi += item.amount;
-      else if (upper.includes('MA')) ma += item.amount;
+      const kw = superStudioKeywordIn(item.label);
+      let target;
+      if (kw){
+        target = kw;
+        currentContext = kw;
+      } else if (superStudioIsHeadlessLabel(item.label)){
+        target = currentContext; // 見出しが無い金額行 → 直前の文脈を引き継ぐ
+      } else {
+        target = null; // 通常の説明文があるのにキーワードが無い＝それ以外の項目
+        currentContext = null;
+      }
+      if (target === 'bi') bi += item.amount;
+      else if (target === 'ma') ma += item.amount;
+      else if (target === 'efo') efo += item.amount;
       else other += item.amount;
     });
     const mk = (label, amount) => ({ id: Date.now()+'-'+Math.random().toString(36).slice(2,8)+'-'+label, label, amount, category:'', product:'', checked: true });
     return [
-      mk('BIを含む項目の合計', bi),
-      mk('MAを含む項目の合計', ma),
+      mk('ecforce biを含む項目の合計', bi),
+      mk('ecforce maを含む項目の合計', ma),
+      mk('ecforce efoを含む項目の合計', efo),
       mk('それ以外の合計', other)
     ];
   }
