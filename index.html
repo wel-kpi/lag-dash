@@ -1041,7 +1041,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.39.0";
+  const APP_VERSION = "4.40.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -7389,12 +7389,13 @@
   // （そのため、もうBlob URLの解放は不要）。
   function revokeInvoiceDraftPreview(){}
 
-  // 「拡大」ボタンの状態。falseの時は幅を欄いっぱいに収めた縮小表示、
-  // trueの時は解像度・実サイズともに大きく描画し、横スクロールで細部を確認できる。
-  let invoicePreviewZoomed = false;
   // 添付PDFの各ページをcanvasに描画してプレビュー欄に表示する。iframe＋Blob URL
   // に頼らないため、ブラウザ内蔵のPDFビューアーが無効な環境でも確実に表示できる。
-  async function renderPdfPreviewCanvases(file, containerEl, zoomed){
+  // hiRes: 内部の描画解像度（拡大表示・ポップアップ表示ではtrueにして文字を
+  // くっきりさせる）。canvas.style.widthは常に欄いっぱい（100%）に収め、
+  // ページ全体がスクロール無しで見えるようにする（細部の確認は欄自体を
+  // 大きくするポップアップ表示で対応する）。
+  async function renderPdfPreviewCanvases(file, containerEl, hiRes){
     if (!containerEl || !file) return;
     containerEl.innerHTML = '<p class="n">プレビューを読み込み中…</p>';
     try{
@@ -7403,13 +7404,11 @@
       containerEl.innerHTML = '';
       for (let p = 1; p <= pdf.numPages; p++){
         const page = await pdf.getPage(p);
-        const viewport = page.getViewport({ scale: zoomed ? 2.6 : 1.3 });
+        const viewport = page.getViewport({ scale: hiRes ? 2.6 : 1.3 });
         const canvas = document.createElement('canvas');
         canvas.width = viewport.width;
         canvas.height = viewport.height;
-        // 縮小表示は欄の幅に収め、拡大表示は実際に描画したサイズのまま
-        // （欄の横幅より大きければ横スクロールで細部を確認できる）。
-        canvas.style.width = zoomed ? '' : '100%';
+        canvas.style.width = '100%';
         canvas.style.marginBottom = '8px';
         canvas.style.border = '1px solid var(--border)';
         canvas.style.borderRadius = '8px';
@@ -7420,6 +7419,48 @@
     }catch(err){
       containerEl.innerHTML = '<p class="n">プレビューの表示に失敗しました。</p>';
     }
+  }
+
+  // PDFプレビューをポップアップ（モーダル）で全体表示するための仕組み。
+  // 既存のプレビュー欄（枠内で拡大＋横スクロール）ではページ全体を見渡せない
+  // という指摘を受け、画面中央に大きく表示するオーバーレイに変更した。
+  let invoicePdfModalEl = null;
+  function closeInvoicePdfPreviewModal(){
+    if (invoicePdfModalEl){
+      invoicePdfModalEl.remove();
+      invoicePdfModalEl = null;
+    }
+    document.removeEventListener('keydown', invoicePdfModalKeydownHandler);
+  }
+  function invoicePdfModalKeydownHandler(e){
+    if (e.key === 'Escape') closeInvoicePdfPreviewModal();
+  }
+  async function openInvoicePdfPreviewModal(file){
+    if (!file) return;
+    closeInvoicePdfPreviewModal();
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.72);display:flex;align-items:center;justify-content:center;padding:24px;';
+    overlay.addEventListener('mousedown', (e)=>{ if (e.target === overlay) closeInvoicePdfPreviewModal(); });
+    const box = document.createElement('div');
+    box.style.cssText = 'background:var(--bg-panel,#1c1f26);border-radius:12px;width:min(880px,100%);max-height:92vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 12px 48px rgba(0,0,0,0.55);';
+    const header = document.createElement('div');
+    header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 16px;border-bottom:1px solid var(--border,#333);flex:0 0 auto;';
+    header.innerHTML = '<div class="n">添付PDFのプレビュー</div>';
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'btn small';
+    closeBtn.textContent = '✕ 閉じる';
+    closeBtn.addEventListener('click', closeInvoicePdfPreviewModal);
+    header.appendChild(closeBtn);
+    const body = document.createElement('div');
+    body.style.cssText = 'overflow:auto;padding:16px;flex:1 1 auto;';
+    box.appendChild(header);
+    box.appendChild(body);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    document.addEventListener('keydown', invoicePdfModalKeydownHandler);
+    invoicePdfModalEl = overlay;
+    await renderPdfPreviewCanvases(file, body, true);
   }
 
   async function handleInvoicePdfFile(file){
@@ -7525,19 +7566,18 @@
           ${d.previewFile ? `<div style="flex:1 1 320px;min-width:280px;">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
               <div class="n">添付PDFのプレビュー（読み取り結果と見比べてご確認ください）</div>
-              <button type="button" class="btn small" id="draftPdfPreviewZoomBtn">${invoicePreviewZoomed ? '🔍 縮小に戻す' : '🔍 拡大'}</button>
+              <button type="button" class="btn small" id="draftPdfPreviewZoomBtn">🔍 ポップアップで拡大表示</button>
             </div>
-            <div id="draftPdfPreviewCanvas" style="max-height:${invoicePreviewZoomed ? '80vh' : '600px'};overflow:auto;"></div>
+            <div id="draftPdfPreviewCanvas" style="max-height:600px;overflow:auto;"></div>
           </div>` : ''}
         </div>
       </div>
     `;
     renderDraftAmountArea();
     if (d.previewFile){
-      renderPdfPreviewCanvases(d.previewFile, document.getElementById('draftPdfPreviewCanvas'), invoicePreviewZoomed);
+      renderPdfPreviewCanvases(d.previewFile, document.getElementById('draftPdfPreviewCanvas'), false);
       document.getElementById('draftPdfPreviewZoomBtn').addEventListener('click', ()=>{
-        invoicePreviewZoomed = !invoicePreviewZoomed;
-        renderInvoiceDraftForm();
+        openInvoicePdfPreviewModal(d.previewFile);
       });
     }
     document.getElementById('draftCategory').addEventListener('change', (e)=>{
