@@ -615,7 +615,7 @@
     <div class="panel">
       <h2>継続率設定（商材: <span id="ltvRetentionSettingsCategoryLabel"></span>）</h2>
       <div class="controls" id="ltvRetentionBulkPredictControls" style="display:none;margin-bottom:8px;">
-        <button class="btn small" id="ltvRetentionBulkPredictBtn">この商材の全オファーに、獲得月「<span id="ltvRetentionBulkPredictMonthLabel"></span>」の継続率を過去の月の平均で一括適用</button>
+        <button class="btn small" id="ltvRetentionBulkPredictBtn">この商材の全オファーに、獲得月「<span id="ltvRetentionBulkPredictMonthLabel"></span>」の継続率として直近の入力済み月の値をそのまま一括適用</button>
       </div>
       <div class="note-box" id="ltvRetentionSettingsAllNote" style="display:none;">「すべて」を選んでいる間は継続率を編集できません（商材タブで個別の商材を選ぶと編集できます）。参考として、各商材の継続率の平均を表示しています。</div>
       <div id="ltvRetentionAllSummary"></div>
@@ -1007,7 +1007,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.30.0";
+  const APP_VERSION = "4.31.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -2462,11 +2462,12 @@
     Object.keys(sums).forEach(cycleKey=>{ avg[cycleKey] = sums[cycleKey] / counts[cycleKey]; });
     return Object.keys(avg).length ? avg : null;
   }
-  // 商材の実在する全オファーについて、指定した獲得月の継続率を「他の獲得月の
-  // 平均」で一括で埋める（月が変わるたびオファーごとに「予測」ボタンを押して
-  // 回る手間を省くため）。既にその月・オファーの値が入っている場合も、平均値で
-  // 上書きする（月初めに0%のまま放置されるのを防ぐのが目的のため）。
-  function bulkApplyPredictedRetentionForCategory(category, monthKey){
+  // 商材の実在する全オファーについて、指定した獲得月の継続率を「直近の入力済み
+  // 月」の値でそのまま（平均せず）一括で埋める（月が変わるたびオファーごとに
+  // 手入力し直す手間を省くため）。オファーごとに、指定月より前で実際にデータが
+  // 入っている最新の月を探し、その月の値をそのままコピーする（複数月の平均は
+  // 取らない＝データが薄い月が混ざって不自然な値になるのを避けるため）。
+  function applyPreviousMonthRetentionForCategory(category, monthKey){
     const records = loadRecords();
     const groups = uniqueSorted(records.filter(r=>r.category===category && r.group).map(r=>r.group));
     let offers = uniqueSorted(groups.map(g=>resolveOffer(category, g)));
@@ -2475,14 +2476,19 @@
     if (!all[category]) all[category] = defaultLtvCategorySettings();
     if (!all[category].retentionByMonth) all[category].retentionByMonth = {};
     const normalized = normalizedMonthRetentionEntry(all[category].retentionByMonth[monthKey]) || {};
+    const pastMonths = Object.keys(all[category].retentionByMonth).filter(mo => mo < monthKey).sort();
     let appliedCount = 0;
     offers.forEach(offer=>{
-      const front = predictRetentionFromPastMonths(category, monthKey, 'frontRetention', offer);
-      const upsell = predictRetentionFromPastMonths(category, monthKey, 'upsellRetention', offer);
-      if (!front && !upsell) return;
-      if (!normalized[offer]) normalized[offer] = { frontRetention:{}, upsellRetention:{} };
-      if (front) normalized[offer].frontRetention = front;
-      if (upsell) normalized[offer].upsellRetention = upsell;
+      let sourceEntry = null;
+      for (let i = pastMonths.length - 1; i >= 0; i--){
+        const norm = normalizedMonthRetentionEntry(all[category].retentionByMonth[pastMonths[i]]);
+        if (norm && norm[offer]){ sourceEntry = norm[offer]; break; }
+      }
+      if (!sourceEntry) return;
+      normalized[offer] = {
+        frontRetention: Object.assign({}, sourceEntry.frontRetention || {}),
+        upsellRetention: Object.assign({}, sourceEntry.upsellRetention || {})
+      };
       appliedCount++;
     });
     all[category].retentionByMonth[monthKey] = normalized;
@@ -2819,12 +2825,12 @@
       if (ltvSelectedCategory){
         document.getElementById('ltvRetentionBulkPredictMonthLabel').textContent = ltvSelectedMonth;
         document.getElementById('ltvRetentionBulkPredictBtn').onclick = ()=>{
-          const result = bulkApplyPredictedRetentionForCategory(ltvSelectedCategory, ltvSelectedMonth);
+          const result = applyPreviousMonthRetentionForCategory(ltvSelectedCategory, ltvSelectedMonth);
           if (!result.appliedCount){
-            alert('他の獲得月にまだ継続率データがないため、予測できませんでした。');
+            alert('それより前の月にまだ継続率データがないため、適用できませんでした。');
             return;
           }
-          alert(`${result.totalOffers}オファー中${result.appliedCount}件に、過去の月の平均を適用しました。`);
+          alert(`${result.totalOffers}オファー中${result.appliedCount}件に、直近の入力済み月の継続率をそのまま適用しました。`);
           renderLtvTab();
         };
       }
