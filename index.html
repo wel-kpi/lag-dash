@@ -1004,7 +1004,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.27.0";
+  const APP_VERSION = "4.28.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -6922,6 +6922,33 @@
   }
   function isTaxInclusiveText(text){ return /内税/.test(text); }
 
+  // SUPER STUDIOの請求書は品目数が非常に多いため、1行ずつ品目化せず、
+  // 「lagnet.jp」の行より下だけを対象に、項目名に「BI」を含むもの・「MA」を
+  // 含むもの・それ以外の3グループに金額を集計した3行だけを返す。
+  function isSuperStudioVendor(vendor, text){
+    const t = (String(vendor||'') + ' ' + String(text||'')).toUpperCase();
+    return t.includes('SUPER STUDIO') || t.includes('スーパースタジオ');
+  }
+  function extractSuperStudioLineItems(lines, taxInclusive){
+    const all = lines || [];
+    const startIdx = all.findIndex(({ text }) => /lagnet\.jp/i.test(text));
+    const targetLines = startIdx === -1 ? all : all.slice(startIdx + 1);
+    const rawItems = extractLineItems(targetLines, taxInclusive);
+    let bi = 0, ma = 0, other = 0;
+    rawItems.forEach(item=>{
+      const upper = item.label.toUpperCase();
+      if (upper.includes('BI')) bi += item.amount;
+      else if (upper.includes('MA')) ma += item.amount;
+      else other += item.amount;
+    });
+    const mk = (label, amount) => ({ id: Date.now()+'-'+Math.random().toString(36).slice(2,8)+'-'+label, label, amount, category:'', product:'', checked: true });
+    return [
+      mk('BIを含む項目の合計', bi),
+      mk('MAを含む項目の合計', ma),
+      mk('それ以外の合計', other)
+    ];
+  }
+
   let invoiceDraft = null;
   let invoiceMonthFilter = '';
   // フォルダ／複数選択で取り込んだ時に、1件ずつ順番に確認していくための待ち行列。
@@ -6956,11 +6983,14 @@
       // SUPER STUDIO・共栄物流の場合、または一部の項目だけがラグネット関連
       // （＝別ブランド分が混在している）と判定できた場合にデフォルトでON。
       const knownProducts = uniqueSorted(loadRecords().map(r=>r.category)).filter(Boolean);
-      const lineItems = extractLineItems(lines, taxInclusive).map(item=>({
-        ...item,
-        product: guessLineItemProduct(item.label, knownProducts),
-        checked: isLagnetRelevantLabel(item.label) // ラグネット関連と分かる項目だけ初期チェックする
-      }));
+      // SUPER STUDIOだけは1行ずつ展開せず、lagnet.jp以下をBI/MA/それ以外の3行に集計する。
+      const lineItems = isSuperStudioVendor(vendor, text)
+        ? extractSuperStudioLineItems(lines, taxInclusive).map(item=>({ ...item, product: guessLineItemProduct(item.label, knownProducts) }))
+        : extractLineItems(lines, taxInclusive).map(item=>({
+            ...item,
+            product: guessLineItemProduct(item.label, knownProducts),
+            checked: isLagnetRelevantLabel(item.label) // ラグネット関連と分かる項目だけ初期チェックする
+          }));
       const hasLineItems = isLineItemVendor(vendor, text) || hasMixedLagnetRelevance(lineItems);
       const amount = hasLineItems ? 0 : guessInvoiceAmount(text);
       invoiceDraft = {
@@ -7076,12 +7106,13 @@
         return `<select class="js-item-product" data-i="${i}" style="min-width:120px;">${opts.join('')}</select>`;
       }
       el.innerHTML = `
-        <p class="n">計上するものだけチェックを入れてください（チェックを外した項目は保存されません）。別ブランド分など不要な行はチェックを外すか削除してください。商材が分かれている場合は「商材」欄でも選べます。</p>
+        <p class="n">計上するものだけチェックを入れてください（チェックを外した項目は保存されません）。別ブランド分など不要な行はチェックを外すか削除してください。商材が分かれている場合は「商材」欄でも選べます。「合算」列で複数行を選んで下のボタンを押すと、選択した行の金額を合計して1行にまとめられます（例: 100円の行を2つ選んで合算すると200円の1行になります）。</p>
         <div class="table-wrap">
           <table class="data">
-            <thead><tr><th>計上</th><th>項目名</th><th class="num">金額(円)</th><th>商材</th><th>分類</th><th></th></tr></thead>
+            <thead><tr><th>合算</th><th>計上</th><th>項目名</th><th class="num">金額(円)</th><th>商材</th><th>分類</th><th></th></tr></thead>
             <tbody>${(d.lineItems||[]).map((item,i)=>`
               <tr data-i="${i}" style="${item.checked===false?'opacity:.5;':''}">
+                <td><input type="checkbox" class="js-item-mergesel" data-i="${i}" ${item.mergeSelected?'checked':''}></td>
                 <td><input type="checkbox" class="js-item-checked" data-i="${i}" ${item.checked!==false?'checked':''}></td>
                 <td style="text-align:left;"><input type="text" class="js-item-label" data-i="${i}" value="${escapeHtml(item.label)}" style="width:100%;"></td>
                 <td class="num"><input type="number" class="js-item-amount" data-i="${i}" value="${Number(item.amount)||0}" style="width:110px;text-align:right;"><div class="n" style="font-size:10.5px;">${fmtYen(item.amount)}</div></td>
@@ -7089,14 +7120,33 @@
                 <td>${categorySelectHtml('itemCat'+i, item.category, true)}<div class="n" style="font-size:10.5px;margin-top:2px;">未指定時: ${categoryBadgeHtml(d.category)}</div></td>
                 <td><button type="button" class="btn small danger js-item-del" data-i="${i}">×</button></td>
               </tr>
-            `).join('') || emptyRow(6)}</tbody>
+            `).join('') || emptyRow(7)}</tbody>
           </table>
         </div>
         <div class="controls" style="margin-top:8px;">
           <button type="button" class="btn small" id="draftItemAddBtn">＋ 項目を追加</button>
+          <button type="button" class="btn small" id="draftItemMergeBtn">選択した行を合算する</button>
           <span class="n">計上合計: ${fmtYen(total)}</span>
         </div>
       `;
+      document.querySelectorAll('.js-item-mergesel').forEach(cb=>{
+        cb.addEventListener('change', ()=>{
+          invoiceDraft.lineItems[Number(cb.dataset.i)].mergeSelected = cb.checked;
+        });
+      });
+      document.getElementById('draftItemMergeBtn').addEventListener('click', ()=>{
+        const items = invoiceDraft.lineItems;
+        const selectedIdx = items.map((it,i)=>it.mergeSelected?i:-1).filter(i=>i!==-1);
+        if (selectedIdx.length < 2){ alert('合算するには2行以上、左端の「合算」列にチェックを入れてください。'); return; }
+        const selectedItems = selectedIdx.map(i=>items[i]);
+        const mergedAmount = selectedItems.reduce((s,it)=>s+(Number(it.amount)||0), 0);
+        const mergedLabel = selectedItems.map(it=>it.label).filter(Boolean).join(' + ');
+        const insertAt = Math.min(...selectedIdx);
+        const merged = { id: Date.now()+'-'+Math.random().toString(36).slice(2,8), label: mergedLabel, amount: mergedAmount, category: '', product: '', checked: true };
+        selectedIdx.slice().sort((a,b)=>b-a).forEach(i=>items.splice(i,1));
+        items.splice(insertAt, 0, merged);
+        renderDraftAmountArea();
+      });
       document.querySelectorAll('.js-item-checked').forEach(cb=>{
         cb.addEventListener('change', ()=>{
           invoiceDraft.lineItems[Number(cb.dataset.i)].checked = cb.checked;
