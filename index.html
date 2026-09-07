@@ -665,6 +665,40 @@
         <button class="btn" id="ltvOneTimeCostAddBtn">＋ 項目を追加</button>
       </div>
     </div>
+
+    <div class="panel">
+      <h2>レポート書き出し<span class="n">（商材×オファーごと・ドキュメント貼り付け用）</span></h2>
+      <div class="note-box">
+        対象月時点の件数（進捗・着地見込み）・売上・利益・稼働している代理店/ASPとその広告費・CPAを、商材×オファーごとにまとめて書き出します。表は「表をコピー」でタブ区切りとしてコピーされるので、Excel・Googleスプレッドシート・Word・Googleドキュメントの表にそのまま貼り付けられます。グラフは画像なので、右クリック（またはドラッグ）でドキュメントに貼り付けられます。
+      </div>
+      <div class="controls">
+        <label>対象月 <input type="month" id="ltvReportMonthInput"></label>
+      </div>
+
+      <h3 style="font-size:12.5px;color:var(--text-dim);margin:16px 0 8px;">グラフ（商材×オファー別 売上・利益）</h3>
+      <div style="overflow-x:auto;"><canvas id="ltvReportChart"></canvas></div>
+
+      <h3 style="font-size:12.5px;color:var(--text-dim);margin:16px 0 8px;">表（商材×オファー サマリー）</h3>
+      <div class="controls">
+        <button class="btn small" id="ltvReportTableCopyBtn">📋 表をコピー（タブ区切り）</button>
+        <span class="n" id="ltvReportTableCopyStatus"></span>
+      </div>
+      <div class="table-wrap"><table class="data" id="ltvReportSummaryTable"></table></div>
+
+      <h3 style="font-size:12.5px;color:var(--text-dim);margin:16px 0 8px;">表（代理店/ASP別 内訳）</h3>
+      <div class="controls">
+        <button class="btn small" id="ltvReportAgencyTableCopyBtn">📋 表をコピー（タブ区切り）</button>
+        <span class="n" id="ltvReportAgencyTableCopyStatus"></span>
+      </div>
+      <div class="table-wrap"><table class="data" id="ltvReportAgencyTable"></table></div>
+
+      <h3 style="font-size:12.5px;color:var(--text-dim);margin:16px 0 8px;">テキスト</h3>
+      <div class="controls">
+        <button class="btn primary" id="ltvReportCopyBtn">📋 コピー</button>
+        <span class="n" id="ltvReportCopyStatus"></span>
+      </div>
+      <textarea id="ltvReportTextArea" readonly rows="20" style="width:100%;background:var(--bg-panel-2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:12px;font-family:var(--mono);font-size:13px;resize:vertical;line-height:1.7;"></textarea>
+    </div>
   </section>
 
   <!-- COST SETTINGS -->
@@ -1007,7 +1041,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.34.0";
+  const APP_VERSION = "4.35.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -4686,6 +4720,246 @@
     document.getElementById('reportTextArea').value = lines.join('\n');
   }
 
+  // ---------- 収益シミュレーション：レポート書き出し（商材×オファーごと） ----------
+  // 対象月の件数（進捗・着地見込み）・売上・利益・稼働している代理店/ASPごとの
+  // 広告費・CPAをまとめる。既存の着地想定・LTVシミュレーションと同じロジック
+  // （computeLanding/computeLandingSplit/simulateLTV）をそのまま使う。
+  let ltvReportSelectedMonth = null;
+
+  function buildLtvReportForOffer(category, offer, monthKey){
+    const records = loadRecords();
+    const { start: monthStart, end: monthEndFull } = monthBounds(monthKey);
+    const isCurrentMonth = monthKey === currentMonthKey();
+    const to = isCurrentMonth ? todayStr() : monthEndFull;
+
+    const filtered = filterRecords(records, { from: monthStart, to, category })
+      .filter(r => !offer || resolveOffer(category, r.group) === offer);
+
+    // 代理店/ASPごとの件数・広告費（同オファー内の複数グループを代理店単位で合算）
+    const byGroup = {};
+    filtered.forEach(r=>{
+      if (!r.group) return;
+      if (!byGroup[r.group]) byGroup[r.group] = [];
+      byGroup[r.group].push(r);
+    });
+    const settings = loadGroupSettings();
+    // 予算運用グループ（受注0件でもその期間に広告費だけ発生していることがある）も対象に含める。
+    loadDailyBudget().forEach(b=>{
+      if (!b.group) return;
+      if (b.date < monthStart || b.date > to) return;
+      if (byGroup[b.group]) return;
+      const s = settings[b.group];
+      if (!s || s.type !== 'budget') return;
+      if (extractCategory(b.group) !== category) return;
+      if (offer && resolveOffer(category, b.group) !== offer) return;
+      byGroup[b.group] = [];
+    });
+
+    const byAgency = {}; // agency -> { count, cost }
+    Object.entries(byGroup).forEach(([g, recs])=>{
+      const agency = (recs[0] && recs[0].agency) || (settings[g] && settings[g].agency) || '不明';
+      const cost = costForGroupRecords(g, recs, monthStart, to);
+      if (!byAgency[agency]) byAgency[agency] = { count: 0, cost: 0 };
+      byAgency[agency].count += recs.length;
+      byAgency[agency].cost += cost;
+    });
+    const agencyRows = Object.entries(byAgency)
+      .map(([agency, v]) => ({ agency, count: v.count, cost: v.cost, cpa: (v.count > 0 && v.cost > 0) ? v.cost / v.count : null }))
+      .sort((a, b) => b.cost - a.cost);
+
+    const landing = computeLanding(category, offer, monthKey);
+    const split = computeLandingSplit(category, offer, monthKey);
+    const sim = simulateLTV(category, split.frontLanding, split.upsellLanding, landing.landingCost, offer, monthKey);
+    const overallCpa = (landing.count > 0 && landing.cost > 0) ? landing.cost / landing.count : null;
+
+    return {
+      category, offer,
+      progressCount: landing.count,
+      landingCount: landing.landingCount,
+      revenue: sim.totalRevenue,
+      profit: sim.totalProfit,
+      agencyRows,
+      overallCpa
+    };
+  }
+
+  function buildLtvReportRows(monthKey){
+    const records = loadRecords();
+    const categories = sortCategoriesForDisplay(uniqueSorted(records.map(r=>r.category).filter(Boolean)));
+    const rows = [];
+    categories.forEach(cat=>{
+      const groups = uniqueSorted(records.filter(r=>r.category===cat && r.group).map(r=>r.group));
+      let offers = uniqueSorted(groups.map(g=>resolveOffer(cat, g)));
+      if (!offers.length) offers = [''];
+      offers.forEach(offer=>{
+        rows.push(buildLtvReportForOffer(cat, offer, monthKey));
+      });
+    });
+    return rows;
+  }
+
+  // タブ区切りテキストとしてクリップボードにコピーする（Excel/スプレッドシート/
+  // Word/Googleドキュメントの表にそのまま貼り付けられる）。
+  function copyTsvToClipboard(headerRow, dataRows, statusElId){
+    const tsv = [headerRow].concat(dataRows).map(row => row.join('\t')).join('\n');
+    copyToClipboard(tsv);
+    const statusEl = document.getElementById(statusElId);
+    if (statusEl) statusEl.textContent = 'コピーしました';
+  }
+
+  function renderLtvReportChart(rows){
+    const canvas = document.getElementById('ltvReportChart');
+    if (!canvas) return;
+    const style = getComputedStyle(document.documentElement);
+    const colorAccent = style.getPropertyValue('--accent').trim() || '#c08b45';
+    const colorGood = style.getPropertyValue('--good').trim() || '#6e9b7a';
+    const colorText = style.getPropertyValue('--text').trim() || '#e8e6e1';
+    const colorTextDim = style.getPropertyValue('--text-dim').trim() || '#9a9ba3';
+    const colorBorder = style.getPropertyValue('--border').trim() || '#33353f';
+
+    const groupWidth = 90, chartHeight = 240, paddingTop = 24, paddingBottom = 70, paddingLeft = 70, paddingRight = 20;
+    const maxVal = Math.max(1, ...rows.map(r => Math.max(r.revenue||0, r.profit||0)));
+    const width = paddingLeft + Math.max(rows.length, 1) * groupWidth + paddingRight;
+    const height = chartHeight + paddingTop + paddingBottom;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = width * dpr;
+    canvas.height = height * dpr;
+    canvas.style.width = width + 'px';
+    canvas.style.height = height + 'px';
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+
+    // Y軸目盛り（0・50%・100%）
+    ctx.strokeStyle = colorBorder;
+    ctx.fillStyle = colorTextDim;
+    ctx.font = '10px sans-serif';
+    ctx.textAlign = 'right';
+    [0, 0.5, 1].forEach(frac=>{
+      const y = paddingTop + chartHeight * (1 - frac);
+      ctx.beginPath();
+      ctx.moveTo(paddingLeft, y);
+      ctx.lineTo(width - paddingRight, y);
+      ctx.stroke();
+      ctx.fillText(fmtYen(maxVal * frac), paddingLeft - 6, y + 3);
+    });
+
+    rows.forEach((r, i)=>{
+      const groupX = paddingLeft + i * groupWidth;
+      const barWidth = 30;
+      const revH = maxVal > 0 ? (r.revenue||0) / maxVal * chartHeight : 0;
+      const profH = maxVal > 0 ? Math.max(0, r.profit||0) / maxVal * chartHeight : 0;
+      ctx.fillStyle = colorAccent;
+      ctx.fillRect(groupX + 8, paddingTop + chartHeight - revH, barWidth, revH);
+      ctx.fillStyle = colorGood;
+      ctx.fillRect(groupX + 8 + barWidth + 4, paddingTop + chartHeight - profH, barWidth, profH);
+
+      ctx.save();
+      ctx.translate(groupX + groupWidth/2, paddingTop + chartHeight + 8);
+      ctx.rotate(-Math.PI/6);
+      ctx.fillStyle = colorText;
+      ctx.font = '10.5px sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillText(`${r.category}/${r.offer||'その他'}`, 0, 0);
+      ctx.restore();
+    });
+
+    // 凡例
+    ctx.textAlign = 'left';
+    ctx.fillStyle = colorAccent;
+    ctx.fillRect(paddingLeft, 4, 10, 10);
+    ctx.fillStyle = colorText;
+    ctx.fillText('売上', paddingLeft + 14, 13);
+    ctx.fillStyle = colorGood;
+    ctx.fillRect(paddingLeft + 60, 4, 10, 10);
+    ctx.fillStyle = colorText;
+    ctx.fillText('利益', paddingLeft + 74, 13);
+  }
+
+  function renderLtvReport(){
+    const monthInput = document.getElementById('ltvReportMonthInput');
+    if (!ltvReportSelectedMonth) ltvReportSelectedMonth = currentMonthKey();
+    if (monthInput && monthInput.value !== ltvReportSelectedMonth) monthInput.value = ltvReportSelectedMonth;
+
+    const rows = buildLtvReportRows(ltvReportSelectedMonth);
+
+    renderLtvReportChart(rows);
+
+    // ---- 表（商材×オファー サマリー） ----
+    const summaryHeader = ['商材', 'オファー', '進捗件数', '着地見込み件数', '売上', '利益', '稼働代理店/ASP数', 'CPA（全体）'];
+    document.getElementById('ltvReportSummaryTable').innerHTML = `
+      <thead><tr>${summaryHeader.map(h=>`<th class="${h==='商材'||h==='オファー'?'':'num'}">${h}</th>`).join('')}</tr></thead>
+      <tbody>${rows.length ? rows.map(r=>`
+        <tr>
+          <td style="text-align:left;">${escapeHtml(r.category)}</td>
+          <td style="text-align:left;">${escapeHtml(r.offer||'その他')}</td>
+          <td class="num">${fmtNum(Math.round(r.progressCount))}</td>
+          <td class="num">${fmtNum(Math.round(r.landingCount))}</td>
+          <td class="num">${fmtYen(r.revenue)}</td>
+          <td class="num">${fmtYen(r.profit)}</td>
+          <td class="num">${fmtNum(r.agencyRows.length)}</td>
+          <td class="num">${r.overallCpa!=null?fmtYen(r.overallCpa):'—'}</td>
+        </tr>
+      `).join('') : emptyRow(8)}</tbody>
+    `;
+
+    // ---- 表（代理店/ASP別 内訳） ----
+    const agencyHeader = ['商材', 'オファー', '代理店/ASP', '件数', '広告費', 'CPA'];
+    const agencyBodyRows = [];
+    rows.forEach(r=>{
+      r.agencyRows.forEach(a=>{
+        agencyBodyRows.push(`
+          <tr>
+            <td style="text-align:left;">${escapeHtml(r.category)}</td>
+            <td style="text-align:left;">${escapeHtml(r.offer||'その他')}</td>
+            <td style="text-align:left;">${escapeHtml(a.agency)}</td>
+            <td class="num">${fmtNum(a.count)}</td>
+            <td class="num">${fmtYen(a.cost)}</td>
+            <td class="num">${a.cpa!=null?fmtYen(a.cpa):'—'}</td>
+          </tr>
+        `);
+      });
+    });
+    document.getElementById('ltvReportAgencyTable').innerHTML = `
+      <thead><tr>${agencyHeader.map(h=>`<th class="${h==='商材'||h==='オファー'||h==='代理店/ASP'?'':'num'}">${h}</th>`).join('')}</tr></thead>
+      <tbody>${agencyBodyRows.length ? agencyBodyRows.join('') : emptyRow(6)}</tbody>
+    `;
+
+    // ---- テキスト ----
+    const lines = [`【${ltvReportSelectedMonth} 収益シミュレーション レポート】`, ''];
+    rows.forEach(r=>{
+      lines.push(`＜${r.category}／${r.offer||'その他'}＞`);
+      lines.push(`件数：進捗 ${fmtNum(Math.round(r.progressCount))}件／着地見込み ${fmtNum(Math.round(r.landingCount))}件`);
+      lines.push(`売上：${fmtYen(r.revenue)}`);
+      lines.push(`利益：${fmtYen(r.profit)}`);
+      if (r.agencyRows.length){
+        lines.push(`稼働代理店/ASP：${r.agencyRows.map(a=>a.agency).join('、')}`);
+        lines.push(`代理店別広告費：${r.agencyRows.map(a=>`${a.agency} ${fmtYen(a.cost)}（CPA ${a.cpa!=null?fmtYen(a.cpa):'—'}）`).join('／')}`);
+      } else {
+        lines.push('稼働代理店/ASP：なし');
+      }
+      lines.push(`CPA（全体）：${r.overallCpa!=null?fmtYen(r.overallCpa):'—'}`);
+      lines.push('');
+    });
+    document.getElementById('ltvReportTextArea').value = lines.join('\n');
+
+    document.getElementById('ltvReportTableCopyBtn').onclick = ()=>{
+      copyTsvToClipboard(summaryHeader, rows.map(r=>[
+        r.category, r.offer||'その他', Math.round(r.progressCount), Math.round(r.landingCount),
+        Math.round(r.revenue), Math.round(r.profit), r.agencyRows.length, r.overallCpa!=null?Math.round(r.overallCpa):''
+      ]), 'ltvReportTableCopyStatus');
+    };
+    document.getElementById('ltvReportAgencyTableCopyBtn').onclick = ()=>{
+      const dataRows = [];
+      rows.forEach(r=>{
+        r.agencyRows.forEach(a=>{
+          dataRows.push([r.category, r.offer||'その他', a.agency, a.count, Math.round(a.cost), a.cpa!=null?Math.round(a.cpa):'']);
+        });
+      });
+      copyTsvToClipboard(agencyHeader, dataRows, 'ltvReportAgencyTableCopyStatus');
+    };
+  }
+
   function populateSelect(sel, values, currentVal){
     const cur = currentVal !== undefined ? currentVal : sel.value;
     sel.innerHTML = '<option value="">すべて</option>' + values.map(v=>`<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join('');
@@ -7515,6 +7789,7 @@
     renderDemographics();
     renderMediaTab();
     renderLtvTab();
+    renderLtvReport();
     renderReport();
     renderCostTab();
     renderBudgetTab();
@@ -7580,6 +7855,12 @@
     statusEl._fadeTimer = setTimeout(()=>{ statusEl.textContent = ''; }, 2500);
   }
   document.getElementById('reportCopyBtn').addEventListener('click', ()=>copyTextareaToClipboard('reportTextArea','reportCopyStatus'));
+  document.getElementById('ltvReportCopyBtn').addEventListener('click', ()=>copyTextareaToClipboard('ltvReportTextArea','ltvReportCopyStatus'));
+  document.getElementById('ltvReportMonthInput').addEventListener('change', (e)=>{
+    if (!e.target.value) return;
+    ltvReportSelectedMonth = e.target.value;
+    renderLtvReport();
+  });
   document.getElementById('ltvPaymentFeeRate').addEventListener('change', (e)=>{
     const g = loadLtvGlobal();
     g.paymentFeeRate = (Number(e.target.value)||0)/100;
