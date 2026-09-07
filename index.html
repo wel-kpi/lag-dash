@@ -1007,7 +1007,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.31.0";
+  const APP_VERSION = "4.32.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -2399,6 +2399,15 @@
     if (!offerKey && Array.isArray(s.extraProducts) && s.extraProducts.length) return s.extraProducts; // legacy fallback
     return [];
   }
+  // 追加商品（シークレットコースなど）の「初期件数」は、商品コードが設定されて
+  // いれば手入力・保存せず、その都度、受注実績から商品コード・獲得月が一致する
+  // 件数をライブで拾ってくる（データ更新のたびに自動で最新件数になる）。
+  // 商品コード未設定のものだけ、従来通り手入力のinitialCountをそのまま使う
+  // （まだ商品コードが分からない/確定していない場合の暫定値として）。
+  function extraProductInitialCountForMonth(ep, monthKey){
+    if (!ep.productCode) return Number(ep.initialCount) || 0;
+    return loadRecords().filter(r => r.month === monthKey && r.code && r.code.includes(ep.productCode)).length;
+  }
   function defaultExtraProduct(){
     return {
       id: 'ep-'+Date.now()+'-'+Math.random().toString(36).slice(2,6),
@@ -2654,11 +2663,12 @@
   // Ad acquisition cost is applied once, in month 1 only (when the customer was
   // first acquired), regardless of which type's cycle triggered that month.
   function simulateLTV(category, initialFront, initialUpsell, initialAdCost, offer, acquisitionMonthKey, retentionOverride){
+    acquisitionMonthKey = acquisitionMonthKey || currentMonthKey();
     const s = getLtvCategorySettings(category);
     const pc = getOfferPriceCogs(category, offer); // オファーごとの単価・原価（設定が無ければ商材共通のデフォルト）
     const g = loadLtvGlobal();
     initialAdCost = initialAdCost || 0;
-    const retention = retentionOverride || getLtvRetention(category, acquisitionMonthKey || currentMonthKey(), offer);
+    const retention = retentionOverride || getLtvRetention(category, acquisitionMonthKey, offer);
 
     const intervals = getLtvIntervals(category, offer);
     const frontSchedule = cycleScheduleFor(intervals.frontIntervals);
@@ -2700,11 +2710,13 @@
 
     // 追加商品（シークレットコースなど、途中で移行した別商品コードの分）を同じ月バケットに上乗せ。
     // オファー単位で個別設定されているため、他のオファー・他の商材には反映されない。
+    // 初期件数は商品コードが設定されていれば、この獲得月の受注実績からライブで拾う。
     let extraProductsInitialSum = 0;
     getOfferExtraProducts(category, offer).forEach(ep=>{
-      extraProductsInitialSum += Number(ep.initialCount)||0;
+      const epInitialCount = extraProductInitialCountForMonth(ep, acquisitionMonthKey);
+      extraProductsInitialSum += epInitialCount;
       const epSchedule = cycleScheduleFor(ep.intervals && ep.intervals.length ? ep.intervals : [30]);
-      let epCount = Number(ep.initialCount)||0;
+      let epCount = epInitialCount;
       for (let cycle = 1; cycle <= epSchedule.cycleCount; cycle++){
         if (cycle > 1) epCount = epCount * retentionRateFor(ep.retention||{}, cycle);
         if (epCount <= 0) break;
@@ -3688,19 +3700,20 @@
       `;
 
       document.getElementById('ltvExtraProductsArea').innerHTML = list.map(ep=>{
-        const matchedCount = ep.productCode ? loadRecords().filter(r=>r.month===ltvSelectedMonth && r.code && r.code.includes(ep.productCode)).length : 0;
+        const liveCount = ep.productCode ? extraProductInitialCountForMonth(ep, ltvSelectedMonth) : null;
         return `
         <div class="panel" style="background:var(--bg-panel-2);margin-bottom:12px;" data-ep-id="${escapeHtml(ep.id)}">
           <div class="controls">
             <label>商品コード <input type="text" class="ep-code" data-id="${escapeHtml(ep.id)}" value="${escapeHtml(ep.productCode||'')}" style="width:140px;" placeholder="例: lagnet00002"></label>
             <label>ラベル(任意) <input type="text" class="ep-label" data-id="${escapeHtml(ep.id)}" value="${escapeHtml(ep.label||'')}" style="width:160px;" placeholder="例: シークレットコース"></label>
-            <label>初期件数 <input type="number" class="ep-count" data-id="${escapeHtml(ep.id)}" value="${ep.initialCount||0}" style="width:90px;"></label>
+            ${liveCount !== null
+              ? `<label>初期件数(自動反映) <input type="number" value="${liveCount}" disabled style="width:90px;background:var(--bg-panel-2);color:var(--text-dim);"></label>`
+              : `<label>初期件数 <input type="number" class="ep-count" data-id="${escapeHtml(ep.id)}" value="${ep.initialCount||0}" style="width:90px;"></label>`}
             <button class="btn small danger ep-del" data-id="${escapeHtml(ep.id)}">削除</button>
           </div>
           ${ep.productCode ? `
           <div class="controls" style="margin-top:0;">
-            <span class="n">受注CSV「${escapeHtml(ltvSelectedMonth)}」でこの商品コードを含む件数：${fmtNum(matchedCount)}件</span>
-            <button class="btn small ep-usematched" data-id="${escapeHtml(ep.id)}" data-count="${matchedCount}">この件数を初期件数に使う</button>
+            <span class="n">受注データ「${escapeHtml(ltvSelectedMonth)}」の商品コード・年月一致件数を初期件数として自動的に加算しています（受注データが更新されるたびに最新件数に切り替わります）。</span>
           </div>
           ` : ''}
           <div class="controls">
@@ -3775,12 +3788,6 @@
         }
         inp.addEventListener('input', ()=>{ clearTimeout(t); t=setTimeout(commit,500); });
         inp.addEventListener('change', ()=>{ clearTimeout(t); commit(); });
-      });
-      document.querySelectorAll('.ep-usematched').forEach(btn=>{
-        btn.addEventListener('click', ()=>{
-          commitEp(btn.dataset.id, { initialCount: Number(btn.dataset.count)||0 });
-          renderLtvTab();
-        });
       });
       document.querySelectorAll('.ep-del').forEach(btn=>{
         btn.addEventListener('click', ()=>{
