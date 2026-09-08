@@ -1041,7 +1041,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.43.0";
+  const APP_VERSION = "4.44.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -3592,6 +3592,13 @@
     } else {
     const retentionOfferKey = ltvSelectedOffer || '';
     const retentionInfo = getLtvRetention(ltvSelectedCategory, ltvSelectedMonth, retentionOfferKey);
+    // オファーを指定しているのに、この獲得月に「すべてのオファー」共通の値（オファー=''
+    // キー）が別途残っていると、オファー専用の値を「デフォルトに戻す」で削除した瞬間、
+    // 商材共通のデフォルトより先にこの「すべてのオファー」の値（多くは継続率CSV取込時に
+    // オファー未選択のまま取り込んだ古い値）が優先されてしまい、意図せず0%等に戻る原因
+    // になる。気づけるよう警告を出し、個別に削除できるようにする。
+    const rawMonthEntryForCheck = normalizedMonthRetentionEntry(getLtvCategorySettings(ltvSelectedCategory).retentionByMonth && getLtvCategorySettings(ltvSelectedCategory).retentionByMonth[ltvSelectedMonth]);
+    const hasStaleAllOffersOverride = !!(retentionOfferKey && rawMonthEntryForCheck && rawMonthEntryForCheck['']);
     document.getElementById('ltvRetentionNote').innerHTML = `
       <div class="note-box">
         獲得月「${escapeHtml(ltvSelectedMonth)}」${retentionOfferKey?'・オファー「'+escapeHtml(retentionOfferKey)+'」':'（すべてのオファー共通）'}の継続率を編集しています。${retentionInfo.isOfferOverride ? 'このオファー専用の値が設定されています。' : (retentionInfo.isMonthOverride ? 'この月の「すべてのオファー」共通値を表示しています。' : 'まだこの月の値がないため、商材共通のデフォルト値を表示しています。')}ここを編集すると、今表示中の条件専用の値として保存されます。
@@ -3599,6 +3606,11 @@
         <button class="btn small" id="ltvRetentionPredictBtn" style="margin-left:6px;">過去の月の平均から予測して埋める</button>
         ${(retentionInfo.isMonthOverride) ? '<button class="btn small" id="ltvRetentionResetMonthBtn" style="margin-left:6px;">デフォルトに戻す</button>' : ''}
       </div>
+      ${hasStaleAllOffersOverride ? `
+      <div class="note-box" style="background:var(--danger-soft);border-color:var(--danger);margin-top:6px;">
+        ⚠️ 獲得月「${escapeHtml(ltvSelectedMonth)}」には、オファー個別の値とは別に「すべてのオファー」共通の値も設定されています（継続率CSV取込などでオファー未選択のまま取り込まれた可能性があります）。この値が残っていると、「デフォルトに戻す」を押した時に商材共通のデフォルトより先にこちらが使われてしまいます。
+        <button class="btn small" id="ltvRetentionClearAllOffersOverrideBtn" style="margin-left:8px;">この「すべてのオファー」の値を削除する</button>
+      </div>` : ''}
     `;
     document.getElementById('ltvRetentionTable').innerHTML = `
       <thead><tr><th>種別</th>${cycleCols.map(c=>`<th class="num">${c==='rest'?`${LTV_EXPLICIT_CYCLES+1}回目以降`:c+'回目'}</th>`).join('')}</tr></thead>
@@ -3677,6 +3689,21 @@
         const normalized = normalizedMonthRetentionEntry(raw);
         if (normalized && normalized[retentionOfferKey]){
           delete normalized[retentionOfferKey];
+          all[ltvSelectedCategory].retentionByMonth[ltvSelectedMonth] = normalized;
+          saveLtvSettings(all);
+          renderLtvTab();
+        }
+      });
+    }
+    const clearAllOffersOverrideBtn = document.getElementById('ltvRetentionClearAllOffersOverrideBtn');
+    if (clearAllOffersOverrideBtn){
+      clearAllOffersOverrideBtn.addEventListener('click', ()=>{
+        if (!confirm(`獲得月「${ltvSelectedMonth}」の「すべてのオファー」共通の継続率を削除します。よろしいですか？`)) return;
+        const all = loadLtvSettings();
+        const raw = all[ltvSelectedCategory] && all[ltvSelectedCategory].retentionByMonth && all[ltvSelectedCategory].retentionByMonth[ltvSelectedMonth];
+        const normalized = normalizedMonthRetentionEntry(raw);
+        if (normalized && normalized['']){
+          delete normalized[''];
           all[ltvSelectedCategory].retentionByMonth[ltvSelectedMonth] = normalized;
           saveLtvSettings(all);
           renderLtvTab();
