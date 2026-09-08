@@ -596,6 +596,7 @@
       <div class="cat-tabs" id="ltvScenarioTabs"></div>
       <div class="controls" style="margin-bottom:8px;">
         <button class="btn small" id="ltvRetentionResetAllBtn">継続率を読み込んだ値に戻す（このセルすべて）</button>
+        <span class="n" id="ltvRetentionResetAllLoadedAt"></span>
       </div>
       <div class="table-wrap"><table class="data" id="ltvCycleTable"></table></div>
     </div>
@@ -1041,7 +1042,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.44.0";
+  const APP_VERSION = "4.45.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -2153,6 +2154,7 @@
     }, 0);
   }
   const ltvRetentionSessionOriginals = {}; // first-value-wins cache so the inline "戻す" button always reverts to what was loaded at the start of this session, not just the last render
+  const ltvRetentionSessionStartedAt = new Date(); // 「戻す」ボタンが実際に戻す先＝このページを開いた（最後に再読み込みした）時点の値、であることが伝わるよう表示する
   let ltvSelectedMonth = null; // acquisition month being simulated; null = current month
   let ltvSelectedScenario = 'progress';
   let ltvSelectedOffer = '';
@@ -3395,6 +3397,10 @@
         });
         renderLtvTab();
       });
+    }
+    const retentionResetAllLoadedAt = document.getElementById('ltvRetentionResetAllLoadedAt');
+    if (retentionResetAllLoadedAt){
+      retentionResetAllLoadedAt.textContent = `（このページを開いた時点＝${ltvRetentionSessionStartedAt.toLocaleString('ja-JP')}の値に戻ります）`;
     }
 
     // ---- per-category settings only make sense for a single selected 商材 ----
