@@ -1041,7 +1041,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.42.0";
+  const APP_VERSION = "4.43.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -3474,6 +3474,12 @@
     document.getElementById('ltvSettingsAllNote').style.display = 'none';
     document.getElementById('ltvRetentionSettingsBody').style.display = '';
     document.getElementById('ltvRetentionSettingsAllNote').style.display = 'none';
+    // 「すべて」選択時にだけ描画される参考サマリー（各商材の平均値）。個別の商材を
+    // 選んだ後もこの中身が残ったままだと、実際には表示されていない古い平均値
+    // （例：他の商材にはまだ値が無いための0%やー）が編集パネルの上に残ってしまい、
+    // 紛らわしいので必ず空にしておく。
+    document.getElementById('ltvSettingsAllSummary').innerHTML = '';
+    document.getElementById('ltvRetentionAllSummary').innerHTML = '';
 
     // ---- settings: price / cogs table（オファーごとに異なる値を持てる） ----
     // 「すべてオファー」選択時は編集不可にし、実在オファーの件数で加重平均した
