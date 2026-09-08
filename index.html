@@ -1042,7 +1042,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.45.0";
+  const APP_VERSION = "4.46.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -7208,7 +7208,8 @@
     { filenameStem: 'ベルウェール', vendor: 'ベルウェール', category: '固定費・変動費' },
     { filenameStem: 'ラヴィリ', vendor: 'ラヴィリ', category: '広告費' },
     { filenameStem: 'リッツ', vendor: 'リッツ', category: '広告費' },
-    { filenameStem: 'レゴーズ', vendor: 'レゴーズ', category: '広告費' }
+    { filenameStem: 'レゴーズ', vendor: 'レゴーズ', category: '広告費' },
+    { filenameStem: 'サイケンカイシュウ', vendor: '市ヶ谷中央法律事務所', category: '固定費・変動費' }
   ];
   // 学習用の「手がかり」を2種類、抽出結果から作る。
   // ・textSignature: 抽出テキストの先頭の空でない行（多くはロゴ文字や書類タイトルで、
@@ -7221,6 +7222,17 @@
   }
   function filenameStemKey(fileName){
     return String(fileName||'').replace(/\.pdf$/i,'').replace(/[0-9]{2,}/g,'').replace(/[_\-\s.]+/g,'').toLowerCase();
+  }
+  // 「請求書」のように書類の種類を表すだけの語は、発行元が違ってもPDFの先頭行に
+  // 同じように現れることが多く（実例：レゴーズとSUPER STUDIOの請求書が、どちらも
+  // 先頭行は単に「請求書」だった）、textSignatureとしてそのまま使うと全く別の
+  // 取引先を誤って同一視してしまう。学習・照合の両方でこの手の一般的すぎる行は
+  // 使わないようにする。
+  const GENERIC_INVOICE_TEXT_SIGNATURES = ['請求書','御請求書','ご請求書','領収書','御領収書','ご領収書','納品書','明細書','invoice','statement'];
+  function isGenericTextSignature(sig){
+    const s = String(sig||'').trim();
+    if (!s) return true;
+    return GENERIC_INVOICE_TEXT_SIGNATURES.some(g => s.toLowerCase() === g.toLowerCase());
   }
   function matchKnownVendor(text){
     const upper = text.toUpperCase();
@@ -7235,7 +7247,7 @@
   function matchLearnedRule(text, fileName, rules){
     const sig = firstMeaningfulLine(text);
     const stem = filenameStemKey(fileName);
-    if (sig){
+    if (sig && !isGenericTextSignature(sig)){
       const bySig = rules.find(r => r.textSignature && r.textSignature === sig);
       if (bySig) return bySig;
     }
@@ -7454,6 +7466,26 @@
     ];
   }
 
+  // 市ヶ谷中央法律事務所（債権回収）の「回収金額・ご請求手数料報告書」は、
+  // 実際に振り込まれる金額が「■ ○○様へのご返金金額」の見出しの下、振込先の
+  // 銀行口座情報に続けて記載される（内税表示のみで税抜金額の記載が無い）。
+  // 口座番号などの数字と誤認しないよう、見出しから次の「■」区切りまでの
+  // 範囲に限定し、その中で「円」が付く金額だけを対象に、最後に出てくるもの
+  // （＝口座情報より後にある実際の金額）を採用する。
+  function isSaikenKaishuVendor(vendor, text){
+    const t = String(vendor||'') + ' ' + String(text||'');
+    return t.includes('市ヶ谷中央法律事務所') || t.includes('サイケンカイシュウ');
+  }
+  function extractSaikenKaishuAmount(text){
+    const norm = zenkakuToHankaku(String(text||''));
+    const m = norm.match(/ご返金金額([\s\S]*?)(?:■|$)/);
+    if (!m) return 0;
+    const amounts = [...m[1].matchAll(/([0-9,]{3,})\s*円/g)].map(x=>parseYenAmount(x[1])).filter(Boolean);
+    if (!amounts.length) return 0;
+    const inclusive = amounts[amounts.length - 1];
+    return Math.round(inclusive / 1.1);
+  }
+
   let invoiceDraft = null;
   let invoiceMonthFilter = '';
   // フォルダ／複数選択で取り込んだ時に、1件ずつ順番に確認していくための待ち行列。
@@ -7571,7 +7603,7 @@
             checked: isLagnetRelevantLabel(item.label) // ラグネット関連と分かる項目だけ初期チェックする
           }));
       const hasLineItems = isLineItemVendor(vendor, text) || hasMixedLagnetRelevance(lineItems);
-      const amount = hasLineItems ? 0 : guessInvoiceAmount(text);
+      const amount = hasLineItems ? 0 : (isSaikenKaishuVendor(vendor, text) ? extractSaikenKaishuAmount(text) : guessInvoiceAmount(text));
       invoiceDraft = {
         editId: null, fileName: file.name, vendor, guessedVendor, month, category: hints.category, hasLineItems, amount, lineItems,
         textSignature: firstMeaningfulLine(text), filenameStem: filenameStemKey(file.name),
@@ -7805,15 +7837,18 @@
     // 取引先名は自動推測と違う時だけ、分類は空でなければ毎回上書きして
     // 常に最新の選択に更新する（最初は空欄で始めても、一度選べば以降は
     // それがデフォルトになっていく）。
-    if (d.textSignature || d.filenameStem){
+    // 「請求書」のような一般的すぎる先頭行は、学習の手がかりとして保存しない
+    // （別の取引先の請求書とtextSignatureが衝突し、誤って取引先を上書きしてしまうため）。
+    const safeTextSignature = (d.textSignature && !isGenericTextSignature(d.textSignature)) ? d.textSignature : '';
+    if (safeTextSignature || d.filenameStem){
       const vendorChanged = vendor && vendor !== (d.guessedVendor || '');
       if (vendorChanged || category){
         const rules = loadInvoiceVendorRules().filter(r => !SEED_INVOICE_VENDOR_RULES.includes(r)); // SEEDは保存対象外
-        const idxRule = rules.findIndex(r=>(d.textSignature && r.textSignature === d.textSignature) || (d.filenameStem && r.filenameStem === d.filenameStem));
+        const idxRule = rules.findIndex(r=>(safeTextSignature && r.textSignature === safeTextSignature) || (d.filenameStem && r.filenameStem === d.filenameStem));
         const prev = idxRule>=0 ? rules[idxRule] : null;
         const rule = {
           id: prev ? prev.id : (Date.now()+'-'+Math.random().toString(36).slice(2,8)),
-          textSignature: d.textSignature||'', filenameStem: d.filenameStem||'',
+          textSignature: safeTextSignature, filenameStem: d.filenameStem||'',
           vendor: vendorChanged ? vendor : (prev ? prev.vendor : vendor),
           category: category || (prev ? prev.category : '')
         };
