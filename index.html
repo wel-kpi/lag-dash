@@ -1106,7 +1106,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.49.0";
+  const APP_VERSION = "4.49.1";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -4846,8 +4846,12 @@
   // （computeLanding/computeLandingSplit/simulateLTV）をそのまま使う。
   let ltvReportSelectedMonth = null;
   // 月ごとに「出力するオファー」の選択状態を覚えておく（{ [monthKey]: Set<"商材||オファー"> }）。
-  // まだ選んでいない月は、初回表示時に「進捗1件以上のオファーのみ」をデフォルト選択する。
+  // ユーザーがまだ一度も手動で触っていない月は、毎回描画時に「進捗1件以上の
+  // オファーのみ」を選び直す（受信でデータが後から届いた場合など、最初の描画時点
+  // では対象データが0件だった月に、空の選択がそのまま固定されてしまわないように
+  // するため）。一度でも手動でチェックを変えた月は、その内容を優先して保持する。
   const ltvReportOfferSelection = {};
+  const ltvReportOfferSelectionTouched = {};
   function ltvReportRowKey(r){ return r.category + '||' + (r.offer || ''); }
 
   function buildLtvReportForOffer(category, offer, monthKey){
@@ -5006,8 +5010,9 @@
     if (monthInput && monthInput.value !== ltvReportSelectedMonth) monthInput.value = ltvReportSelectedMonth;
 
     const allRows = buildLtvReportRows(ltvReportSelectedMonth);
-    if (!ltvReportOfferSelection[ltvReportSelectedMonth]){
-      // 初回表示時のデフォルト：進捗1件以上（＝流入があった）オファーのみ選択
+    if (!ltvReportOfferSelectionTouched[ltvReportSelectedMonth]){
+      // まだ手動で触っていない月は、毎回「進捗1件以上のオファーのみ」を選び直す
+      // （受信でデータが後から届いた場合などに、空の選択のまま固定されないように）。
       ltvReportOfferSelection[ltvReportSelectedMonth] = new Set(
         allRows.filter(r => r.progressCount >= 1).map(ltvReportRowKey)
       );
@@ -5025,15 +5030,18 @@
     }).join('') || '<span class="n">対象月にデータがありません</span>';
     document.querySelectorAll('.ltv-report-offer-check').forEach(cb=>{
       cb.addEventListener('change', ()=>{
+        ltvReportOfferSelectionTouched[ltvReportSelectedMonth] = true;
         if (cb.checked) selectedKeys.add(cb.dataset.key); else selectedKeys.delete(cb.dataset.key);
         renderLtvReport();
       });
     });
     document.getElementById('ltvReportSelectAllBtn').onclick = ()=>{
+      ltvReportOfferSelectionTouched[ltvReportSelectedMonth] = true;
       allRows.forEach(r=>selectedKeys.add(ltvReportRowKey(r)));
       renderLtvReport();
     };
     document.getElementById('ltvReportSelectNoneBtn').onclick = ()=>{
+      ltvReportOfferSelectionTouched[ltvReportSelectedMonth] = true;
       selectedKeys.clear();
       renderLtvReport();
     };
