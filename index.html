@@ -128,6 +128,13 @@
   .kpi .value.good{color:var(--good);}
   .kpi .sub{font-size:11px;color:var(--text-dim);margin-top:4px;font-family:var(--data-font);font-variant-numeric:tabular-nums;}
 
+  /* モール手数料タブ */
+  .mallfee-share-bar{background:var(--bg-panel-2);border-radius:6px;height:8px;overflow:hidden;margin-top:6px;}
+  .mallfee-share-bar-fill{height:100%;border-radius:6px;}
+  .mallfee-tooltip{position:absolute;background:var(--bg-panel);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:11.5px;color:var(--text);pointer-events:none;box-shadow:0 4px 16px rgba(0,0,0,0.3);white-space:nowrap;z-index:20;}
+  .mallfee-tooltip .row{display:flex;align-items:center;gap:6px;margin-top:2px;}
+  .mallfee-tooltip .dot{width:8px;height:8px;border-radius:50%;display:inline-block;}
+
   /* dropzone */
   #dropzone{
     border:1.5px dashed var(--border);border-radius:var(--radius);
@@ -351,6 +358,7 @@
     <button data-tab="targetmin">🎯 目標(MIN)<span class="wip-tag">準備中</span></button>
     <button data-tab="targetmax">🎯 目標(MAX)<span class="wip-tag">準備中</span></button>
     <button data-tab="invoices">🧾 請求書<span class="wip-tag">準備中</span></button>
+    <button data-tab="mallfee">🏬 モール手数料</button>
 
     <div class="nav-group-label">分析管理</div>
     <button data-tab="demographics">👥 デモグラ</button>
@@ -888,6 +896,54 @@
     </div>
   </section>
 
+  <!-- MALL FEE -->
+  <section id="tab-mallfee" style="display:none;">
+    <div class="panel">
+      <h2>モール手数料<span class="n">（セルノート・ラグネットのモール売上比率で運用手数料を按分）</span></h2>
+      <div class="note-box">
+        毎月のモール運用手数料（デフォルト<strong>200万円</strong>、月ごとに変更可）を、セルノート・ラグネットそれぞれの楽天＋Amazon売上の比率で按分します。
+      </div>
+      <div class="controls">
+        <label>対象月 <input type="month" id="mallFeeMonthInput"></label>
+      </div>
+      <div class="grid-kpi" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));">
+        <div class="kpi">
+          <div class="label">セルノート</div>
+          <label style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:8px;">楽天売上(円)
+            <input type="text" inputmode="numeric" class="mallfee-money-input" id="mallFeeCellnoteRakuten" style="width:130px;text-align:right;">
+          </label>
+          <label style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:8px;">Amazon売上(円)
+            <input type="text" inputmode="numeric" class="mallfee-money-input" id="mallFeeCellnoteAmazon" style="width:130px;text-align:right;">
+          </label>
+        </div>
+        <div class="kpi">
+          <div class="label">ラグネット</div>
+          <label style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:8px;">楽天売上(円)
+            <input type="text" inputmode="numeric" class="mallfee-money-input" id="mallFeeLagnetRakuten" style="width:130px;text-align:right;">
+          </label>
+          <label style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:8px;">Amazon売上(円)
+            <input type="text" inputmode="numeric" class="mallfee-money-input" id="mallFeeLagnetAmazon" style="width:130px;text-align:right;">
+          </label>
+        </div>
+        <div class="kpi">
+          <div class="label">運用手数料(円)<span class="n">デフォルト2,000,000円</span></div>
+          <input type="text" inputmode="numeric" class="mallfee-money-input" id="mallFeeFeeInput" style="width:100%;text-align:right;font-size:20px;margin-top:8px;">
+        </div>
+      </div>
+
+      <div class="grid-kpi" id="mallFeeResultCards" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr));"></div>
+
+      <h3 style="font-size:12.5px;color:var(--text-dim);margin:20px 0 10px;">月別売上比率の推移</h3>
+      <div style="position:relative;">
+        <div class="table-wrap"><canvas id="mallFeeChart"></canvas></div>
+        <div id="mallFeeChartTooltip" class="mallfee-tooltip" style="display:none;"></div>
+      </div>
+
+      <h3 style="font-size:12.5px;color:var(--text-dim);margin:20px 0 10px;">月別データ</h3>
+      <div class="table-wrap"><table class="data" id="mallFeeHistoryTable"></table></div>
+    </div>
+  </section>
+
   <!-- MANAGE -->
   <section id="tab-manage" style="display:none;">
     <div class="panel">
@@ -1042,7 +1098,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.46.0";
+  const APP_VERSION = "4.47.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -1083,6 +1139,13 @@
   // 3ヶ月按分など、実際の支出額をベースにした指標のために使う。予算上限入力
   // （BUDGET_PLAN_KEY）とは別物＝あちらは事前の見積り、こちらは確定実績）。
   const MONTHLY_AD_SPEND_KEY = 'lagnet_monthly_ad_spend_v1';
+  // モール手数料タブ用。月ごとの「セルノート/ラグネットの楽天・Amazon売上」と
+  // その月の運用手数料の手入力（{ [monthKey]: { cellnoteRakuten, cellnoteAmazon,
+  // lagnetRakuten, lagnetAmazon, fee } }）。売上比率・按分後の手数料は毎回この
+  // 生の入力値から計算する（保存はしない＝計算ロジックを直しても過去月の表示が
+  // 常に最新のロジックで再計算される）。
+  const MALL_FEE_KEY = 'lagnet_mall_fee_v1';
+  const MALL_FEE_DEFAULT_TOTAL_FEE = 2000000;
   // 進捗タブ用。商材・月ごとの「実績入力の最終月まで」の手入力マスター
   // （定期顧客数・解約率・売上単価・売上・コスト）。それより先の月はここから
   // 計算で予測する。新規獲得件数・広告費は実績データ／予算管理タブから自動で
@@ -1444,7 +1507,8 @@
     // バラバラになる不具合があった（定数の宣言順の都合上、キー名は
     // ここでは文字列そのまま書く＝下のLANDING_OVERRIDE_KEY等と同じ値）。
     landingOverrides: 'lagnet_landing_override_v1',
-    landingSim: 'lagnet_landing_sim_v1'
+    landingSim: 'lagnet_landing_sim_v1',
+    mallFee: MALL_FEE_KEY
   };
   const SYNC_KEYS = Object.keys(SYNC_KEY_TO_STORAGE_KEY);
 
@@ -1941,6 +2005,15 @@
   // ---------- helpers ----------
   function fmtNum(n){ return (n||0).toLocaleString('ja-JP'); }
   function fmtYen(n){ return '¥' + Math.round(n||0).toLocaleString('ja-JP'); }
+  // カンマ区切りの金額入力欄用。入力中は数字以外を取り除いてカンマを付け直し、
+  // 保存時は数字だけのNumberとして取り出す。
+  function formatMoneyInputDisplay(input){
+    const raw = String(input.value||'').replace(/[^0-9]/g,'');
+    input.value = raw ? Number(raw).toLocaleString('ja-JP') : '';
+  }
+  function parseMoneyInputValue(input){
+    return Number(String(input.value||'').replace(/[^0-9]/g,'')) || 0;
+  }
   function fmtPct(n){ return isFinite(n) ? n.toFixed(1)+'%' : '—'; }
   function pct(numerator, denom){ return denom>0 ? (numerator/denom*100) : NaN; }
   function todayStr(d){
@@ -6220,6 +6293,57 @@
     const d = new Date(y, (m - 1) + delta, 1);
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
   }
+  // モール手数料タブ用の生データ（月ごとの売上4項目＋運用手数料）の読み書き。
+  function loadMallFeeData(){
+    try{ return JSON.parse(localStorage.getItem(MALL_FEE_KEY) || '{}'); }catch(e){ return {}; }
+  }
+  function saveMallFeeData(obj){
+    const json = JSON.stringify(obj);
+    const changed = localStorage.getItem(MALL_FEE_KEY) !== json;
+    localStorage.setItem(MALL_FEE_KEY, json);
+    if (changed) markLocalMutation();
+  }
+  // まだ保存されていない月は、運用手数料だけデフォルト（200万円）で補う。
+  function mallFeeEntry(monthKey){
+    const e = loadMallFeeData()[monthKey];
+    return {
+      cellnoteRakuten: e && e.cellnoteRakuten != null ? Number(e.cellnoteRakuten) : 0,
+      cellnoteAmazon: e && e.cellnoteAmazon != null ? Number(e.cellnoteAmazon) : 0,
+      lagnetRakuten: e && e.lagnetRakuten != null ? Number(e.lagnetRakuten) : 0,
+      lagnetAmazon: e && e.lagnetAmazon != null ? Number(e.lagnetAmazon) : 0,
+      fee: e && e.fee != null ? Number(e.fee) : MALL_FEE_DEFAULT_TOTAL_FEE
+    };
+  }
+  function saveMallFeeEntry(monthKey, entry){
+    const all = loadMallFeeData();
+    all[monthKey] = entry;
+    saveMallFeeData(all);
+  }
+  // ブランド別のモール売上合計・売上比率・按分後の運用手数料を計算する。
+  // 端数処理: セルノートを四捨五入し、ラグネットは「運用手数料 − セルノート」
+  // にすることで、2ブランドの合計が必ず入力した運用手数料と一致するようにする。
+  // 両ブランドとも売上0円の場合は0除算を避け、比率・按分額ともにnull（画面側で「-」表示）。
+  // 片方だけ売上0円の場合は、売上があるブランドを100%・0円ブランドを0%にする。
+  function computeMallFeeSplit(entry){
+    const cellnoteSales = (Number(entry.cellnoteRakuten)||0) + (Number(entry.cellnoteAmazon)||0);
+    const lagnetSales = (Number(entry.lagnetRakuten)||0) + (Number(entry.lagnetAmazon)||0);
+    const totalSales = cellnoteSales + lagnetSales;
+    const fee = Number(entry.fee)||0;
+    let cellnoteRatio = null, lagnetRatio = null, cellnoteFee = null, lagnetFee = null;
+    if (totalSales > 0){
+      if (cellnoteSales <= 0){
+        cellnoteRatio = 0; lagnetRatio = 1; cellnoteFee = 0; lagnetFee = fee;
+      } else if (lagnetSales <= 0){
+        cellnoteRatio = 1; lagnetRatio = 0; cellnoteFee = fee; lagnetFee = 0;
+      } else {
+        cellnoteRatio = cellnoteSales / totalSales;
+        lagnetRatio = lagnetSales / totalSales;
+        cellnoteFee = Math.round(fee * cellnoteRatio);
+        lagnetFee = fee - cellnoteFee;
+      }
+    }
+    return { cellnoteSales, lagnetSales, totalSales, cellnoteRatio, lagnetRatio, cellnoteFee, lagnetFee, fee };
+  }
   // monthKeyを含む直近3ヶ月（例: 2026-09なら7,8,9月）の広告費実績の合計を3で割った値。
   // 未入力の月は0として扱う（合計・按分値ともに、その旨をUI側の内訳表示で分かるようにする）。
   // currentMonthPlannedCostを渡すと、当月（3ヶ月のうち最後の月）の実績にそれを
@@ -7995,6 +8119,211 @@
     });
   }
 
+  let mallFeeSelectedMonth = null;
+  function renderMallFeeChart(){
+    const canvas = document.getElementById('mallFeeChart');
+    if (!canvas) return;
+    const months = Object.keys(loadMallFeeData()).sort();
+    const style = getComputedStyle(document.documentElement);
+    const colorAccent = style.getPropertyValue('--accent').trim() || '#c08b45';
+    const colorBlue = style.getPropertyValue('--blue').trim() || '#6b8cae';
+    const colorText = style.getPropertyValue('--text').trim() || '#e8e6e1';
+    const colorTextDim = style.getPropertyValue('--text-dim').trim() || '#9a9ba3';
+    const colorBorder = style.getPropertyValue('--border').trim() || '#33353f';
+
+    if (!months.length){
+      canvas.width = 0; canvas.height = 0;
+      canvas.onmousemove = null; canvas.onmouseleave = null;
+      const tooltip = document.getElementById('mallFeeChartTooltip');
+      if (tooltip) tooltip.style.display = 'none';
+      return;
+    }
+    const points = months.map(mo=>{
+      const s = computeMallFeeSplit(mallFeeEntry(mo));
+      return { month: mo, cellnote: s.cellnoteRatio, lagnet: s.lagnetRatio };
+    });
+
+    const chartHeight = 200, paddingTop = 20, paddingBottom = 34, paddingLeft = 44, paddingRight = 24;
+    const stepX = 70;
+    const width = paddingLeft + Math.max(points.length - 1, 0) * stepX + paddingRight;
+    const height = chartHeight + paddingTop + paddingBottom;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = width * dpr; canvas.height = height * dpr;
+    canvas.style.width = width + 'px'; canvas.style.height = height + 'px';
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+
+    ctx.strokeStyle = colorBorder;
+    ctx.fillStyle = colorTextDim;
+    ctx.font = '10px sans-serif';
+    ctx.textAlign = 'right';
+    [0, 0.5, 1].forEach(frac=>{
+      const y = paddingTop + chartHeight * (1 - frac);
+      ctx.beginPath(); ctx.moveTo(paddingLeft, y); ctx.lineTo(width - paddingRight, y); ctx.stroke();
+      ctx.fillText(Math.round(frac * 100) + '%', paddingLeft - 6, y + 3);
+    });
+
+    function xFor(i){ return paddingLeft + i * stepX; }
+    function yFor(ratio){ return paddingTop + chartHeight * (1 - (ratio || 0)); }
+    function drawLine(key, color){
+      ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 2;
+      ctx.beginPath();
+      let started = false;
+      points.forEach((p, i)=>{
+        const val = p[key];
+        if (val == null) return;
+        const x = xFor(i), y = yFor(val);
+        if (!started){ ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+      points.forEach((p, i)=>{
+        const val = p[key];
+        if (val == null) return;
+        ctx.beginPath();
+        ctx.arc(xFor(i), yFor(val), 3, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    }
+    drawLine('cellnote', colorAccent);
+    drawLine('lagnet', colorBlue);
+
+    ctx.fillStyle = colorText;
+    ctx.font = '10px sans-serif';
+    ctx.textAlign = 'center';
+    points.forEach((p, i)=>{ ctx.fillText(p.month, xFor(i), paddingTop + chartHeight + 16); });
+
+    ctx.textAlign = 'left';
+    ctx.fillStyle = colorAccent; ctx.fillRect(paddingLeft, 2, 10, 10);
+    ctx.fillStyle = colorText; ctx.fillText('セルノート', paddingLeft + 14, 11);
+    ctx.fillStyle = colorBlue; ctx.fillRect(paddingLeft + 90, 2, 10, 10);
+    ctx.fillStyle = colorText; ctx.fillText('ラグネット', paddingLeft + 104, 11);
+
+    const tooltip = document.getElementById('mallFeeChartTooltip');
+    canvas.onmousemove = (e)=>{
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      let nearest = 0, nearestDist = Infinity;
+      points.forEach((p, i)=>{
+        const d = Math.abs(xFor(i) - mx);
+        if (d < nearestDist){ nearestDist = d; nearest = i; }
+      });
+      if (nearestDist > 30){ tooltip.style.display = 'none'; return; }
+      const p = points[nearest];
+      tooltip.innerHTML = `
+        <div style="font-weight:700;">${escapeHtml(p.month)}</div>
+        <div class="row"><span class="dot" style="background:${colorAccent};"></span>セルノート：${p.cellnote != null ? (p.cellnote * 100).toFixed(1) + '%' : '—'}</div>
+        <div class="row"><span class="dot" style="background:${colorBlue};"></span>ラグネット：${p.lagnet != null ? (p.lagnet * 100).toFixed(1) + '%' : '—'}</div>
+      `;
+      tooltip.style.left = (xFor(nearest) + 10) + 'px';
+      tooltip.style.top = Math.max(0, yFor(Math.max(p.cellnote || 0, p.lagnet || 0)) - 44) + 'px';
+      tooltip.style.display = '';
+    };
+    canvas.onmouseleave = ()=>{ tooltip.style.display = 'none'; };
+  }
+  function renderMallFeeHistoryTable(){
+    const months = Object.keys(loadMallFeeData()).sort().reverse();
+    const header = ['対象年月','セルノート楽天','セルノートAmazon','セルノートモール売上','セルノート比率','セルノート按分手数料','ラグネット楽天','ラグネットAmazon','ラグネットモール売上','ラグネット比率','ラグネット按分手数料','運用手数料'];
+    document.getElementById('mallFeeHistoryTable').innerHTML = `
+      <thead><tr>${header.map(h=>`<th class="${h==='対象年月'?'':'num'}">${h}</th>`).join('')}</tr></thead>
+      <tbody>${months.length ? months.map(mo=>{
+        const entry = mallFeeEntry(mo);
+        const s = computeMallFeeSplit(entry);
+        return `<tr>
+          <td style="text-align:left;">${escapeHtml(mo)}</td>
+          <td class="num">${fmtYen(entry.cellnoteRakuten)}</td>
+          <td class="num">${fmtYen(entry.cellnoteAmazon)}</td>
+          <td class="num">${fmtYen(s.cellnoteSales)}</td>
+          <td class="num">${s.cellnoteRatio!=null?(s.cellnoteRatio*100).toFixed(1)+'%':'—'}</td>
+          <td class="num">${s.cellnoteFee!=null?fmtYen(s.cellnoteFee):'—'}</td>
+          <td class="num">${fmtYen(entry.lagnetRakuten)}</td>
+          <td class="num">${fmtYen(entry.lagnetAmazon)}</td>
+          <td class="num">${fmtYen(s.lagnetSales)}</td>
+          <td class="num">${s.lagnetRatio!=null?(s.lagnetRatio*100).toFixed(1)+'%':'—'}</td>
+          <td class="num">${s.lagnetFee!=null?fmtYen(s.lagnetFee):'—'}</td>
+          <td class="num">${fmtYen(entry.fee)}</td>
+        </tr>`;
+      }).join('') : emptyRow(header.length)}</tbody>
+    `;
+  }
+  function renderMallFeeTab(){
+    if (!mallFeeSelectedMonth) mallFeeSelectedMonth = currentMonthKey();
+    const monthInput = document.getElementById('mallFeeMonthInput');
+    if (monthInput && monthInput.value !== mallFeeSelectedMonth) monthInput.value = mallFeeSelectedMonth;
+
+    const entry = mallFeeEntry(mallFeeSelectedMonth);
+    const fieldIds = [
+      ['mallFeeCellnoteRakuten','cellnoteRakuten'],
+      ['mallFeeCellnoteAmazon','cellnoteAmazon'],
+      ['mallFeeLagnetRakuten','lagnetRakuten'],
+      ['mallFeeLagnetAmazon','lagnetAmazon']
+    ];
+    fieldIds.forEach(([id, key])=>{
+      const inp = document.getElementById(id);
+      if (inp && document.activeElement !== inp) inp.value = entry[key] ? Number(entry[key]).toLocaleString('ja-JP') : '';
+    });
+    const feeInput = document.getElementById('mallFeeFeeInput');
+    if (feeInput && document.activeElement !== feeInput) feeInput.value = entry.fee ? Number(entry.fee).toLocaleString('ja-JP') : '';
+
+    function commit(){
+      saveMallFeeEntry(mallFeeSelectedMonth, {
+        cellnoteRakuten: parseMoneyInputValue(document.getElementById('mallFeeCellnoteRakuten')),
+        cellnoteAmazon: parseMoneyInputValue(document.getElementById('mallFeeCellnoteAmazon')),
+        lagnetRakuten: parseMoneyInputValue(document.getElementById('mallFeeLagnetRakuten')),
+        lagnetAmazon: parseMoneyInputValue(document.getElementById('mallFeeLagnetAmazon')),
+        fee: parseMoneyInputValue(document.getElementById('mallFeeFeeInput'))
+      });
+      renderMallFeeTab();
+    }
+    fieldIds.map(f=>f[0]).concat(['mallFeeFeeInput']).forEach(id=>{
+      const inp = document.getElementById(id);
+      if (!inp) return;
+      inp.oninput = ()=>formatMoneyInputDisplay(inp);
+      inp.onchange = commit;
+    });
+
+    const s = computeMallFeeSplit(entry);
+    function brandCardHtml(name, sales, ratio, fee, colorVar, copyId, statusId){
+      return `
+        <div class="kpi">
+          <div class="label">【${escapeHtml(name)}】</div>
+          <div class="sub" style="margin-top:0;">モール売上</div>
+          <div class="value">${fmtYen(sales)}</div>
+          <div class="sub" style="margin-top:10px;">売上比率</div>
+          <div class="value" style="font-size:18px;">${ratio!=null ? (ratio*100).toFixed(1)+'%' : '—'}</div>
+          <div class="mallfee-share-bar"><div class="mallfee-share-bar-fill" style="width:${ratio!=null?(ratio*100).toFixed(1):0}%;background:${colorVar};"></div></div>
+          <div class="sub" style="margin-top:10px;">按分後 運用手数料</div>
+          <div class="value accent" style="font-size:20px;">${fee!=null ? fmtYen(fee) : '—'}</div>
+          <div class="controls" style="margin-top:8px;">
+            <button type="button" class="btn small" id="${copyId}" ${fee==null?'disabled':''}>📋 コピー</button>
+            <span class="n" id="${statusId}"></span>
+          </div>
+        </div>
+      `;
+    }
+    document.getElementById('mallFeeResultCards').innerHTML =
+      brandCardHtml('セルノート', s.cellnoteSales, s.cellnoteRatio, s.cellnoteFee, 'var(--accent)', 'mallFeeCopyCellnoteBtn', 'mallFeeCopyCellnoteStatus') +
+      brandCardHtml('ラグネット', s.lagnetSales, s.lagnetRatio, s.lagnetFee, 'var(--blue)', 'mallFeeCopyLagnetBtn', 'mallFeeCopyLagnetStatus');
+
+    function wireCopy(btnId, statusId, value){
+      const btn = document.getElementById(btnId);
+      if (!btn || value == null) return;
+      btn.onclick = ()=>{
+        copyToClipboard(String(Math.round(value)));
+        const statusEl = document.getElementById(statusId);
+        if (!statusEl) return;
+        statusEl.textContent = 'コピーしました';
+        clearTimeout(statusEl._fadeTimer);
+        statusEl._fadeTimer = setTimeout(()=>{ statusEl.textContent = ''; }, 2000);
+      };
+    }
+    wireCopy('mallFeeCopyCellnoteBtn', 'mallFeeCopyCellnoteStatus', s.cellnoteFee);
+    wireCopy('mallFeeCopyLagnetBtn', 'mallFeeCopyLagnetStatus', s.lagnetFee);
+
+    renderMallFeeChart();
+    renderMallFeeHistoryTable();
+  }
+
   function renderInvoicesTab(){
     renderInvoiceVendorRulesTable();
     renderInvoiceList();
@@ -8017,6 +8346,7 @@
     renderTargetMinTab();
     renderTargetMaxTab();
     renderInvoicesTab();
+    renderMallFeeTab();
     renderHistory();
     renderDeleteGroupSelect();
     renderMediaMapTable();
@@ -8027,7 +8357,7 @@
     btn.addEventListener('click', ()=>{
       document.querySelectorAll('nav.tabs button').forEach(b=>b.classList.remove('active'));
       btn.classList.add('active');
-      ['dashboard','summary','trend','media','ltv','cost','budget','annualplan','targetmin','targetmax','invoices','demographics','report','manage'].forEach(t=>{
+      ['dashboard','summary','trend','media','ltv','cost','budget','annualplan','targetmin','targetmax','invoices','mallfee','demographics','report','manage'].forEach(t=>{
         document.getElementById('tab-'+t).style.display = (t===btn.dataset.tab) ? '' : 'none';
       });
       renderAll();
@@ -8080,6 +8410,11 @@
     if (!e.target.value) return;
     ltvReportSelectedMonth = e.target.value;
     renderLtvReport();
+  });
+  document.getElementById('mallFeeMonthInput').addEventListener('change', (e)=>{
+    if (!e.target.value) return;
+    mallFeeSelectedMonth = e.target.value;
+    renderMallFeeTab();
   });
   document.getElementById('ltvPaymentFeeRate').addEventListener('change', (e)=>{
     const g = loadLtvGlobal();
