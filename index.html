@@ -1106,7 +1106,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.49.1";
+  const APP_VERSION = "4.50.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -4941,12 +4941,15 @@
     const style = getComputedStyle(document.documentElement);
     const colorAccent = style.getPropertyValue('--accent').trim() || '#c08b45';
     const colorGood = style.getPropertyValue('--good').trim() || '#6e9b7a';
+    const colorBlue = style.getPropertyValue('--blue').trim() || '#6b8cae';
     const colorText = style.getPropertyValue('--text').trim() || '#e8e6e1';
     const colorTextDim = style.getPropertyValue('--text-dim').trim() || '#9a9ba3';
     const colorBorder = style.getPropertyValue('--border').trim() || '#33353f';
 
-    const groupWidth = 90, chartHeight = 240, paddingTop = 24, paddingBottom = 70, paddingLeft = 70, paddingRight = 20;
-    const maxVal = Math.max(1, ...rows.map(r => Math.max(r.revenue||0, r.profit||0)));
+    // 件数（獲得件数）は右軸、金額（売上・利益）は左軸で、別スケールとして重ねて表示する。
+    const groupWidth = 110, chartHeight = 240, paddingTop = 24, paddingBottom = 70, paddingLeft = 74, paddingRight = 74;
+    const maxYen = Math.max(1, ...rows.map(r => Math.max(r.revenue||0, r.profit||0)));
+    const maxCount = Math.max(1, ...rows.map(r => r.progressCount||0));
     const width = paddingLeft + Math.max(rows.length, 1) * groupWidth + paddingRight;
     const height = chartHeight + paddingTop + paddingBottom;
     const dpr = window.devicePixelRatio || 1;
@@ -4958,29 +4961,35 @@
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, width, height);
 
-    // Y軸目盛り（0・50%・100%）
+    // Y軸目盛り（0・50%・100%）。左＝円、右＝件。
     ctx.strokeStyle = colorBorder;
-    ctx.fillStyle = colorTextDim;
     ctx.font = '10px sans-serif';
-    ctx.textAlign = 'right';
     [0, 0.5, 1].forEach(frac=>{
       const y = paddingTop + chartHeight * (1 - frac);
       ctx.beginPath();
       ctx.moveTo(paddingLeft, y);
       ctx.lineTo(width - paddingRight, y);
       ctx.stroke();
-      ctx.fillText(fmtYen(maxVal * frac), paddingLeft - 6, y + 3);
+      ctx.fillStyle = colorTextDim;
+      ctx.textAlign = 'right';
+      ctx.fillText(fmtYen(maxYen * frac), paddingLeft - 6, y + 3);
+      ctx.textAlign = 'left';
+      ctx.fillStyle = colorBlue;
+      ctx.fillText(fmtNum(Math.round(maxCount * frac)) + '件', width - paddingRight + 6, y + 3);
     });
 
     rows.forEach((r, i)=>{
       const groupX = paddingLeft + i * groupWidth;
-      const barWidth = 30;
-      const revH = maxVal > 0 ? (r.revenue||0) / maxVal * chartHeight : 0;
-      const profH = maxVal > 0 ? Math.max(0, r.profit||0) / maxVal * chartHeight : 0;
+      const barWidth = 26;
+      const countH = maxCount > 0 ? (r.progressCount||0) / maxCount * chartHeight : 0;
+      const revH = maxYen > 0 ? (r.revenue||0) / maxYen * chartHeight : 0;
+      const profH = maxYen > 0 ? Math.max(0, r.profit||0) / maxYen * chartHeight : 0;
+      ctx.fillStyle = colorBlue;
+      ctx.fillRect(groupX + 6, paddingTop + chartHeight - countH, barWidth, countH);
       ctx.fillStyle = colorAccent;
-      ctx.fillRect(groupX + 8, paddingTop + chartHeight - revH, barWidth, revH);
+      ctx.fillRect(groupX + 6 + (barWidth + 4), paddingTop + chartHeight - revH, barWidth, revH);
       ctx.fillStyle = colorGood;
-      ctx.fillRect(groupX + 8 + barWidth + 4, paddingTop + chartHeight - profH, barWidth, profH);
+      ctx.fillRect(groupX + 6 + (barWidth + 4) * 2, paddingTop + chartHeight - profH, barWidth, profH);
 
       ctx.save();
       ctx.translate(groupX + groupWidth/2, paddingTop + chartHeight + 8);
@@ -4994,14 +5003,18 @@
 
     // 凡例
     ctx.textAlign = 'left';
-    ctx.fillStyle = colorAccent;
+    ctx.fillStyle = colorBlue;
     ctx.fillRect(paddingLeft, 4, 10, 10);
     ctx.fillStyle = colorText;
-    ctx.fillText('売上', paddingLeft + 14, 13);
-    ctx.fillStyle = colorGood;
-    ctx.fillRect(paddingLeft + 60, 4, 10, 10);
+    ctx.fillText('獲得件数', paddingLeft + 14, 13);
+    ctx.fillStyle = colorAccent;
+    ctx.fillRect(paddingLeft + 74, 4, 10, 10);
     ctx.fillStyle = colorText;
-    ctx.fillText('利益', paddingLeft + 74, 13);
+    ctx.fillText('売上', paddingLeft + 88, 13);
+    ctx.fillStyle = colorGood;
+    ctx.fillRect(paddingLeft + 134, 4, 10, 10);
+    ctx.fillStyle = colorText;
+    ctx.fillText('利益', paddingLeft + 148, 13);
   }
 
   function renderLtvReport(){
@@ -5011,10 +5024,10 @@
 
     const allRows = buildLtvReportRows(ltvReportSelectedMonth);
     if (!ltvReportOfferSelectionTouched[ltvReportSelectedMonth]){
-      // まだ手動で触っていない月は、毎回「進捗1件以上のオファーのみ」を選び直す
-      // （受信でデータが後から届いた場合などに、空の選択のまま固定されないように）。
+      // まだ手動で触っていない月は、毎回「進捗1件以上のオファーのみ（広告経由なしを除く）」を
+      // 選び直す（受信でデータが後から届いた場合などに、空の選択のまま固定されないように）。
       ltvReportOfferSelection[ltvReportSelectedMonth] = new Set(
-        allRows.filter(r => r.progressCount >= 1).map(ltvReportRowKey)
+        allRows.filter(r => r.progressCount >= 1 && r.category !== '広告経由なし').map(ltvReportRowKey)
       );
     }
     const selectedKeys = ltvReportOfferSelection[ltvReportSelectedMonth];
@@ -5046,15 +5059,38 @@
       renderLtvReport();
     };
 
-    const rows = allRows.filter(r => selectedKeys.has(ltvReportRowKey(r)));
+    // 獲得が多い順（進捗件数の降順）に並べ替えてから、グラフ・表・テキストへ渡す。
+    const rows = allRows.filter(r => selectedKeys.has(ltvReportRowKey(r)))
+      .sort((a, b) => b.progressCount - a.progressCount);
 
     renderLtvReportChart(rows);
 
     // ---- 表（商材×オファー サマリー） ----
-    const summaryHeader = ['商材', 'オファー', '進捗件数', '着地見込み件数', '売上', '利益', '稼働代理店/ASP数', 'CPA（全体）'];
+    const summaryHeader = ['商材', 'オファー', '進捗件数', '着地見込み件数', '売上', '利益', '代理店数', 'CPA'];
+    // 合計行：件数・売上・利益は単純合計、CPAは総広告費÷総件数の加重平均
+    // （行ごとのCPAを単純平均すると、件数の少ないオファーに引きずられて実態と
+    // ズレるため）。
+    const totalProgress = rows.reduce((s,r)=>s+Math.round(r.progressCount||0), 0);
+    const totalLanding = rows.reduce((s,r)=>s+Math.round(r.landingCount||0), 0);
+    const totalRevenue = rows.reduce((s,r)=>s+(r.revenue||0), 0);
+    const totalProfit = rows.reduce((s,r)=>s+(r.profit||0), 0);
+    const totalAgencyCount = new Set(rows.flatMap(r=>r.agencyRows.map(a=>a.agency))).size;
+    const totalCost = rows.reduce((s,r)=>s + r.agencyRows.reduce((s2,a)=>s2+(a.cost||0), 0), 0);
+    const totalCpa = totalProgress > 0 && totalCost > 0 ? totalCost / totalProgress : null;
     document.getElementById('ltvReportSummaryTable').innerHTML = `
       <thead><tr>${summaryHeader.map(h=>`<th class="${h==='商材'||h==='オファー'?'':'num'}">${h}</th>`).join('')}</tr></thead>
-      <tbody>${rows.length ? rows.map(r=>`
+      <tbody>
+        ${rows.length ? `<tr class="total-row-top">
+          <td>合計</td>
+          <td>—</td>
+          <td class="num">${fmtNum(totalProgress)}</td>
+          <td class="num">${fmtNum(totalLanding)}</td>
+          <td class="num">${fmtYen(totalRevenue)}</td>
+          <td class="num">${fmtYen(totalProfit)}</td>
+          <td class="num">${fmtNum(totalAgencyCount)}</td>
+          <td class="num">${totalCpa!=null?fmtYen(totalCpa):'—'}</td>
+        </tr>` : ''}
+        ${rows.length ? rows.map(r=>`
         <tr>
           <td style="text-align:left;">${escapeHtml(r.category)}</td>
           <td style="text-align:left;">${escapeHtml(r.offer||'その他')}</td>
@@ -5109,10 +5145,11 @@
     document.getElementById('ltvReportTextArea').value = lines.join('\n');
 
     document.getElementById('ltvReportTableCopyBtn').onclick = ()=>{
-      copyTsvToClipboard(summaryHeader, rows.map(r=>[
+      const totalTsvRow = ['合計', '—', totalProgress, totalLanding, Math.round(totalRevenue), Math.round(totalProfit), totalAgencyCount, totalCpa!=null?Math.round(totalCpa):''];
+      copyTsvToClipboard(summaryHeader, [totalTsvRow].concat(rows.map(r=>[
         r.category, r.offer||'その他', Math.round(r.progressCount), Math.round(r.landingCount),
         Math.round(r.revenue), Math.round(r.profit), r.agencyRows.length, r.overallCpa!=null?Math.round(r.overallCpa):''
-      ]), 'ltvReportTableCopyStatus');
+      ])), 'ltvReportTableCopyStatus');
     };
     document.getElementById('ltvReportAgencyTableCopyBtn').onclick = ()=>{
       const dataRows = [];
