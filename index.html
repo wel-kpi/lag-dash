@@ -129,6 +129,7 @@
   .kpi .sub{font-size:11px;color:var(--text-dim);margin-top:4px;font-family:var(--data-font);font-variant-numeric:tabular-nums;}
 
   /* モール手数料タブ */
+  .mallfee-money-input{font-family:var(--data-font);font-variant-numeric:tabular-nums;}
   .mallfee-share-bar{background:var(--bg-panel-2);border-radius:6px;height:8px;overflow:hidden;margin-top:6px;}
   .mallfee-share-bar-fill{height:100%;border-radius:6px;}
   .mallfee-tooltip{position:absolute;background:var(--bg-panel);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:11.5px;color:var(--text);pointer-events:none;box-shadow:0 4px 16px rgba(0,0,0,0.3);white-space:nowrap;z-index:20;}
@@ -939,7 +940,7 @@
         <div id="mallFeeChartTooltip" class="mallfee-tooltip" style="display:none;"></div>
       </div>
 
-      <h3 style="font-size:12.5px;color:var(--text-dim);margin:20px 0 10px;">月別データ</h3>
+      <h3 style="font-size:12.5px;color:var(--text-dim);margin:20px 0 10px;">月別データ<span class="n">「売上」列にカーソルを合わせると楽天/Amazonの内訳が見られます</span></h3>
       <div class="table-wrap"><table class="data" id="mallFeeHistoryTable"></table></div>
     </div>
   </section>
@@ -1098,7 +1099,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.47.0";
+  const APP_VERSION = "4.48.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -8223,22 +8224,22 @@
   }
   function renderMallFeeHistoryTable(){
     const months = Object.keys(loadMallFeeData()).sort().reverse();
-    const header = ['対象年月','セルノート楽天','セルノートAmazon','セルノートモール売上','セルノート比率','セルノート按分手数料','ラグネット楽天','ラグネットAmazon','ラグネットモール売上','ラグネット比率','ラグネット按分手数料','運用手数料'];
+    // 横スクロールなしで一目で見られるよう、楽天／Amazonの内訳は列を分けず
+    // 「売上」列に集約し、ホバー（title属性）で内訳を確認できるようにする。
+    const header = ['対象年月','セルノート売上','セルノート比率','セルノート手数料','ラグネット売上','ラグネット比率','ラグネット手数料','運用手数料'];
     document.getElementById('mallFeeHistoryTable').innerHTML = `
       <thead><tr>${header.map(h=>`<th class="${h==='対象年月'?'':'num'}">${h}</th>`).join('')}</tr></thead>
       <tbody>${months.length ? months.map(mo=>{
         const entry = mallFeeEntry(mo);
         const s = computeMallFeeSplit(entry);
+        const cellnoteBreakdown = `楽天：${fmtYen(entry.cellnoteRakuten)} ／ Amazon：${fmtYen(entry.cellnoteAmazon)}`;
+        const lagnetBreakdown = `楽天：${fmtYen(entry.lagnetRakuten)} ／ Amazon：${fmtYen(entry.lagnetAmazon)}`;
         return `<tr>
           <td style="text-align:left;">${escapeHtml(mo)}</td>
-          <td class="num">${fmtYen(entry.cellnoteRakuten)}</td>
-          <td class="num">${fmtYen(entry.cellnoteAmazon)}</td>
-          <td class="num">${fmtYen(s.cellnoteSales)}</td>
+          <td class="num" title="${escapeHtml(cellnoteBreakdown)}" style="cursor:help;text-decoration:underline dotted;">${fmtYen(s.cellnoteSales)}</td>
           <td class="num">${s.cellnoteRatio!=null?(s.cellnoteRatio*100).toFixed(1)+'%':'—'}</td>
           <td class="num">${s.cellnoteFee!=null?fmtYen(s.cellnoteFee):'—'}</td>
-          <td class="num">${fmtYen(entry.lagnetRakuten)}</td>
-          <td class="num">${fmtYen(entry.lagnetAmazon)}</td>
-          <td class="num">${fmtYen(s.lagnetSales)}</td>
+          <td class="num" title="${escapeHtml(lagnetBreakdown)}" style="cursor:help;text-decoration:underline dotted;">${fmtYen(s.lagnetSales)}</td>
           <td class="num">${s.lagnetRatio!=null?(s.lagnetRatio*100).toFixed(1)+'%':'—'}</td>
           <td class="num">${s.lagnetFee!=null?fmtYen(s.lagnetFee):'—'}</td>
           <td class="num">${fmtYen(entry.fee)}</td>
