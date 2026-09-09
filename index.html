@@ -685,6 +685,13 @@
         <label>対象月 <input type="month" id="ltvReportMonthInput"></label>
       </div>
 
+      <h3 style="font-size:12.5px;color:var(--text-dim);margin:16px 0 8px;">出力するオファーを選択<span class="n">（デフォルトは進捗1件以上のオファーのみ）</span></h3>
+      <div class="controls" style="margin-bottom:8px;">
+        <button class="btn small" id="ltvReportSelectAllBtn">すべて選択</button>
+        <button class="btn small" id="ltvReportSelectNoneBtn">すべて解除</button>
+      </div>
+      <div id="ltvReportOfferCheckboxes" style="display:flex;flex-wrap:wrap;gap:8px 16px;margin-bottom:12px;"></div>
+
       <h3 style="font-size:12.5px;color:var(--text-dim);margin:16px 0 8px;">グラフ（商材×オファー別 売上・利益）</h3>
       <div style="overflow-x:auto;"><canvas id="ltvReportChart"></canvas></div>
 
@@ -1099,7 +1106,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.48.0";
+  const APP_VERSION = "4.49.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -4838,6 +4845,10 @@
   // 広告費・CPAをまとめる。既存の着地想定・LTVシミュレーションと同じロジック
   // （computeLanding/computeLandingSplit/simulateLTV）をそのまま使う。
   let ltvReportSelectedMonth = null;
+  // 月ごとに「出力するオファー」の選択状態を覚えておく（{ [monthKey]: Set<"商材||オファー"> }）。
+  // まだ選んでいない月は、初回表示時に「進捗1件以上のオファーのみ」をデフォルト選択する。
+  const ltvReportOfferSelection = {};
+  function ltvReportRowKey(r){ return r.category + '||' + (r.offer || ''); }
 
   function buildLtvReportForOffer(category, offer, monthKey){
     const records = loadRecords();
@@ -4994,7 +5005,40 @@
     if (!ltvReportSelectedMonth) ltvReportSelectedMonth = currentMonthKey();
     if (monthInput && monthInput.value !== ltvReportSelectedMonth) monthInput.value = ltvReportSelectedMonth;
 
-    const rows = buildLtvReportRows(ltvReportSelectedMonth);
+    const allRows = buildLtvReportRows(ltvReportSelectedMonth);
+    if (!ltvReportOfferSelection[ltvReportSelectedMonth]){
+      // 初回表示時のデフォルト：進捗1件以上（＝流入があった）オファーのみ選択
+      ltvReportOfferSelection[ltvReportSelectedMonth] = new Set(
+        allRows.filter(r => r.progressCount >= 1).map(ltvReportRowKey)
+      );
+    }
+    const selectedKeys = ltvReportOfferSelection[ltvReportSelectedMonth];
+
+    document.getElementById('ltvReportOfferCheckboxes').innerHTML = allRows.map(r=>{
+      const key = ltvReportRowKey(r);
+      return `
+        <label style="display:flex;align-items:center;gap:5px;font-size:12px;">
+          <input type="checkbox" class="ltv-report-offer-check" data-key="${escapeHtml(key)}" ${selectedKeys.has(key)?'checked':''}>
+          ${escapeHtml(r.category)}/${escapeHtml(r.offer || 'その他')}<span class="n">（進捗${fmtNum(Math.round(r.progressCount))}件）</span>
+        </label>
+      `;
+    }).join('') || '<span class="n">対象月にデータがありません</span>';
+    document.querySelectorAll('.ltv-report-offer-check').forEach(cb=>{
+      cb.addEventListener('change', ()=>{
+        if (cb.checked) selectedKeys.add(cb.dataset.key); else selectedKeys.delete(cb.dataset.key);
+        renderLtvReport();
+      });
+    });
+    document.getElementById('ltvReportSelectAllBtn').onclick = ()=>{
+      allRows.forEach(r=>selectedKeys.add(ltvReportRowKey(r)));
+      renderLtvReport();
+    };
+    document.getElementById('ltvReportSelectNoneBtn').onclick = ()=>{
+      selectedKeys.clear();
+      renderLtvReport();
+    };
+
+    const rows = allRows.filter(r => selectedKeys.has(ltvReportRowKey(r)));
 
     renderLtvReportChart(rows);
 
@@ -8285,16 +8329,23 @@
 
     const s = computeMallFeeSplit(entry);
     function brandCardHtml(name, sales, ratio, fee, colorVar, copyId, statusId){
+      const smallRowStyle = 'display:flex;justify-content:space-between;align-items:baseline;';
+      const smallLabelStyle = 'font-size:11.5px;color:var(--text-dim);';
+      const smallValueStyle = 'font-size:13px;color:var(--text-dim);font-family:var(--data-font);font-variant-numeric:tabular-nums;';
       return `
         <div class="kpi">
           <div class="label">【${escapeHtml(name)}】</div>
-          <div class="sub" style="margin-top:0;">モール売上</div>
-          <div class="value">${fmtYen(sales)}</div>
-          <div class="sub" style="margin-top:10px;">売上比率</div>
-          <div class="value" style="font-size:18px;">${ratio!=null ? (ratio*100).toFixed(1)+'%' : '—'}</div>
+          <div style="${smallRowStyle}margin-top:6px;">
+            <span style="${smallLabelStyle}">モール売上</span>
+            <span style="${smallValueStyle}">${fmtYen(sales)}</span>
+          </div>
+          <div style="${smallRowStyle}margin-top:2px;">
+            <span style="${smallLabelStyle}">売上比率</span>
+            <span style="${smallValueStyle}">${ratio!=null ? (ratio*100).toFixed(1)+'%' : '—'}</span>
+          </div>
           <div class="mallfee-share-bar"><div class="mallfee-share-bar-fill" style="width:${ratio!=null?(ratio*100).toFixed(1):0}%;background:${colorVar};"></div></div>
-          <div class="sub" style="margin-top:10px;">按分後 運用手数料</div>
-          <div class="value accent" style="font-size:20px;">${fee!=null ? fmtYen(fee) : '—'}</div>
+          <div class="sub" style="margin-top:14px;">按分後 運用手数料</div>
+          <div class="value accent" style="font-size:30px;">${fee!=null ? fmtYen(fee) : '—'}</div>
           <div class="controls" style="margin-top:8px;">
             <button type="button" class="btn small" id="${copyId}" ${fee==null?'disabled':''}>📋 コピー</button>
             <span class="n" id="${statusId}"></span>
