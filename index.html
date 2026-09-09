@@ -683,6 +683,8 @@
       </div>
       <div class="controls">
         <label>対象月 <input type="month" id="ltvReportMonthInput"></label>
+        <button class="btn primary" id="ltvReportWordDownloadBtn">📄 Wordでダウンロード</button>
+        <span class="n" id="ltvReportWordDownloadStatus"></span>
       </div>
 
       <h3 style="font-size:12.5px;color:var(--text-dim);margin:16px 0 8px;">出力するオファーを選択<span class="n">（デフォルトは進捗1件以上のオファーのみ）</span></h3>
@@ -1097,6 +1099,8 @@
 
 <!-- 請求書PDFのテキスト抽出用（ブラウザ内のみで完結、外部送信なし） -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<!-- 収益シミュレーション レポートのWord書き出し用（ブラウザ内のみで完結、外部送信なし） -->
+<script src="https://cdn.jsdelivr.net/npm/docx@9.7.1/dist/index.iife.js"></script>
 <script>
   if (window.pdfjsLib) {
     pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
@@ -1106,7 +1110,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.50.1";
+  const APP_VERSION = "4.51.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -4845,6 +4849,7 @@
   // 広告費・CPAをまとめる。既存の着地想定・LTVシミュレーションと同じロジック
   // （computeLanding/computeLandingSplit/simulateLTV）をそのまま使う。
   let ltvReportSelectedMonth = null;
+  let ltvReportExportState = null; // 直近のレポート描画内容（Wordダウンロード用にそのまま再利用する）
   // 月ごとに「出力するオファー」の選択状態を覚えておく（{ [monthKey]: Set<"商材||オファー"> }）。
   // ユーザーがまだ一度も手動で触っていない月は、毎回描画時に「進捗1件以上の
   // オファーのみ」を選び直す（受信でデータが後から届いた場合など、最初の描画時点
@@ -5017,6 +5022,120 @@
     ctx.fillText('利益', paddingLeft + 148, 13);
   }
 
+  function dataUrlToUint8Array(dataUrl){
+    const base64 = dataUrl.split(',')[1];
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i=0; i<binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  }
+  // 今画面に表示している収益シミュレーションレポート（グラフ・表）を、そのまま
+  // Wordファイル（.docx）としてダウンロードする。docx（ブラウザ用IIFEビルド）を
+  // CDNから読み込んで使う。ネットワークに一切送信せず、ブラウザ内で.docxの
+  // バイナリを組み立ててそのままダウンロードする。
+  async function exportLtvReportToWord(){
+    const state = ltvReportExportState;
+    const statusEl = document.getElementById('ltvReportWordDownloadStatus');
+    if (!state){ return; }
+    if (!window.docx){
+      if (statusEl) statusEl.textContent = 'ライブラリの読み込みに失敗しました';
+      alert('Word書き出しライブラリの読み込みに失敗しました（オフラインの場合は書き出せません）。');
+      return;
+    }
+    if (statusEl) statusEl.textContent = '作成中…';
+    try{
+      const { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType, ShadingType, ImageRun, AlignmentType, PageOrientation } = window.docx;
+      const FONT = 'M PLUS 2';
+      const HEAD_SHADE = 'EFE6D8';
+      const TOTAL_SHADE = 'F0C480';
+      const USABLE_WIDTH = 11000; // 縦向きLetterでの使用可能幅の目安（ページ幅12240 - 左右余白620x2）
+
+      function headerCell(text, width){
+        return new TableCell({
+          width: { size: width, type: WidthType.DXA },
+          shading: { type: ShadingType.CLEAR, fill: HEAD_SHADE },
+          children: [new Paragraph({ children: [new TextRun({ text, bold: true, size: 19, font: FONT })] })]
+        });
+      }
+      function dataCell(text, width, alignRight, opts){
+        opts = opts || {};
+        return new TableCell({
+          width: { size: width, type: WidthType.DXA },
+          shading: opts.shade ? { type: ShadingType.CLEAR, fill: opts.shade } : undefined,
+          children: [new Paragraph({ alignment: alignRight ? AlignmentType.RIGHT : AlignmentType.LEFT, children: [new TextRun({ text: String(text), bold: !!opts.bold, size: 19, font: FONT })] })]
+        });
+      }
+      function buildTable(headers, rows, widths, numericStartIndex, totalRow){
+        const dataRows = rows.map(r => new TableRow({ children: r.map((c,i)=> dataCell(c, widths[i], i>=numericStartIndex)) }));
+        const totalRowEl = totalRow ? new TableRow({ children: totalRow.map((c,i)=> dataCell(c, widths[i], i>=numericStartIndex, { bold:true, shade: TOTAL_SHADE })) }) : null;
+        return new Table({
+          width: { size: USABLE_WIDTH, type: WidthType.DXA },
+          columnWidths: widths,
+          rows: [ new TableRow({ children: headers.map((h,i)=>headerCell(h, widths[i])) }), ...(totalRowEl?[totalRowEl]:[]), ...dataRows ]
+        });
+      }
+
+      const canvas = document.getElementById('ltvReportChart');
+      const dpr = window.devicePixelRatio || 1;
+      const imgBytes = dataUrlToUint8Array(canvas.toDataURL('image/png'));
+      const dims = { width: canvas.width / dpr, height: canvas.height / dpr };
+      const maxW = 700;
+      const scale = Math.min(1, maxW / dims.width);
+
+      const rows = state.rows;
+      const summaryHeaders = ['商材','オファー','件数','着地見込み','売上','利益','代理店数','CPA'];
+      const summaryWidths = [1500, 1600, 1000, 1200, 1600, 1400, 1000, 1900];
+      const summaryTotalRow = ['合計', '—', fmtNum(state.totalProgress), fmtNum(state.totalLanding), fmtYen(state.totalRevenue), fmtYen(state.totalProfit), fmtNum(state.totalAgencyCount), state.totalCpa!=null?fmtYen(state.totalCpa):'—'];
+      const summaryDataRows = rows.map(r=>[
+        r.category, r.offer||'その他', fmtNum(Math.round(r.progressCount)), fmtNum(Math.round(r.landingCount)),
+        fmtYen(r.revenue), fmtYen(r.profit), fmtNum(r.agencyRows.length), r.overallCpa!=null?fmtYen(r.overallCpa):'—'
+      ]);
+
+      const agencyWidths = [1300, 1500, 3800, 900, 1900, 1600];
+      const agencyDataRows = [];
+      rows.forEach(r=>{
+        r.agencyRows.forEach(a=>{
+          agencyDataRows.push([r.category, r.offer||'その他', a.agency, fmtNum(a.count), fmtYen(a.cost), a.cpa!=null?fmtYen(a.cpa):'—']);
+        });
+      });
+
+      const children = [
+        new Paragraph({ children:[new TextRun({ text:'LAGNET 収益シミュレーション レポート', bold:true, size:40, font:FONT })] }),
+        new Paragraph({ children:[new TextRun({ text:`対象月：${state.monthKey}`, size:20, color:'666666', font:FONT })] }),
+        new Paragraph({ text:'' }),
+        new Paragraph({ text:'グラフ（商材×オファー別 獲得件数・売上・利益／獲得が多い順）', heading: HeadingLevel.HEADING_2 }),
+        new Paragraph({ children:[ new ImageRun({ type:'png', data: imgBytes, transformation:{ width: Math.round(dims.width*scale), height: Math.round(dims.height*scale) } }) ] }),
+        new Paragraph({ text:'表（商材×オファー サマリー）', heading: HeadingLevel.HEADING_2, spacing:{ before:200 } }),
+        buildTable(summaryHeaders, summaryDataRows, summaryWidths, 2, rows.length ? summaryTotalRow : null),
+        new Paragraph({ text:'表（代理店/ASP別 内訳）', heading: HeadingLevel.HEADING_2, spacing:{ before:200 } }),
+        buildTable(['商材','オファー','代理店/ASP','件数','広告費','CPA'], agencyDataRows, agencyWidths, 3)
+      ];
+
+      const doc = new Document({
+        styles: { default: { document: { run: { font: FONT } } } },
+        sections: [{
+          properties: { page: { size:{ width:12240, height:15840, orientation: PageOrientation.PORTRAIT }, margin:{ top:720, bottom:720, left:620, right:620 } } },
+          children
+        }]
+      });
+      const blob = await Packer.toBlob(doc);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `LAGNET収益シミュレーションレポート_${state.monthKey}.docx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(()=>URL.revokeObjectURL(url), 5000);
+      if (statusEl) statusEl.textContent = 'ダウンロードしました';
+    }catch(err){
+      if (statusEl) statusEl.textContent = '作成に失敗しました';
+      alert('Wordファイルの作成に失敗しました：' + ((err && err.message) || err));
+      return;
+    }
+    setTimeout(()=>{ if (statusEl) statusEl.textContent = ''; }, 3000);
+  }
+
   function renderLtvReport(){
     const monthInput = document.getElementById('ltvReportMonthInput');
     if (!ltvReportSelectedMonth) ltvReportSelectedMonth = currentMonthKey();
@@ -5160,6 +5279,14 @@
       });
       copyTsvToClipboard(agencyHeader, dataRows, 'ltvReportAgencyTableCopyStatus');
     };
+
+    // Word書き出しボタン用に、今表示中の内容をそのまま覚えておく（再計算しない）。
+    ltvReportExportState = {
+      monthKey: ltvReportSelectedMonth, rows,
+      totalProgress, totalLanding, totalRevenue, totalProfit, totalAgencyCount, totalCpa
+    };
+    const wordBtn = document.getElementById('ltvReportWordDownloadBtn');
+    if (wordBtn) wordBtn.onclick = exportLtvReportToWord;
   }
 
   function populateSelect(sel, values, currentVal){
