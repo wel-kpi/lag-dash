@@ -353,12 +353,9 @@
     <button data-tab="ltv">💹 収益シミュレーション</button>
     <button data-tab="cost">💰 広告費設定</button>
 
-    <div class="nav-group-label">収益管理</div>
-    <button data-tab="budget">🎯 予算管理<span class="wip-tag">準備中</span></button>
-    <button data-tab="annualplan">🗓️ 進捗<span class="wip-tag">準備中</span></button>
-    <button data-tab="targetmin">🎯 目標(MIN)<span class="wip-tag">準備中</span></button>
-    <button data-tab="targetmax">🎯 目標(MAX)<span class="wip-tag">準備中</span></button>
-    <button data-tab="invoices">🧾 請求書<span class="wip-tag">準備中</span></button>
+    <div class="nav-group-label">予算管理</div>
+    <button data-tab="budget">🎯 上限管理<span class="wip-tag">準備中</span></button>
+    <button data-tab="invoices">🧾 請求書</button>
     <button data-tab="mallfee">🏬 モール手数料</button>
 
     <div class="nav-group-label">分析管理</div>
@@ -482,9 +479,53 @@
       <h2>商材別 報告テキスト<span class="n" id="reportRangeLabel"></span></h2>
       <div class="controls">
         <button class="btn primary" id="reportCopyBtn">📋 コピー</button>
+        <button class="btn" id="reportWordDownloadBtn">📄 Wordでダウンロード</button>
         <span class="n" id="reportCopyStatus"></span>
       </div>
       <textarea id="reportTextArea" readonly rows="16" style="width:100%;background:var(--bg-panel-2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:12px;font-family:var(--mono);font-size:13px;resize:vertical;line-height:1.7;"></textarea>
+    </div>
+
+    <div class="panel">
+      <h2>収益シミュレーション レポート書き出し<span class="n">（商材×オファーごと・ドキュメント貼り付け用）</span></h2>
+      <div class="note-box">
+        対象月時点の件数（進捗・着地見込み）・売上・利益・稼働している代理店/ASPとその広告費・CPAを、商材×オファーごとにまとめて書き出します。表は「表をコピー」でタブ区切りとしてコピーされるので、Excel・Googleスプレッドシート・Word・Googleドキュメントの表にそのまま貼り付けられます。グラフは画像なので、右クリック（またはドラッグ）でドキュメントに貼り付けられます。「Wordでダウンロード」を押すと、グラフ・表を含んだWordファイル（.docx）がそのまま作成されます。
+      </div>
+      <div class="controls">
+        <label>対象月 <input type="month" id="ltvReportMonthInput"></label>
+        <button class="btn primary" id="ltvReportWordDownloadBtn">📄 Wordでダウンロード</button>
+        <span class="n" id="ltvReportWordDownloadStatus"></span>
+      </div>
+
+      <h3 style="font-size:12.5px;color:var(--text-dim);margin:16px 0 8px;">出力するオファーを選択<span class="n">（デフォルトは進捗1件以上のオファーのみ）</span></h3>
+      <div class="controls" style="margin-bottom:8px;">
+        <button class="btn small" id="ltvReportSelectAllBtn">すべて選択</button>
+        <button class="btn small" id="ltvReportSelectNoneBtn">すべて解除</button>
+      </div>
+      <div id="ltvReportOfferCheckboxes" style="display:flex;flex-wrap:wrap;gap:8px 16px;margin-bottom:12px;"></div>
+
+      <h3 style="font-size:12.5px;color:var(--text-dim);margin:16px 0 8px;">グラフ（商材×オファー別 売上・利益）</h3>
+      <div style="overflow-x:auto;"><canvas id="ltvReportChart"></canvas></div>
+
+      <h3 style="font-size:12.5px;color:var(--text-dim);margin:16px 0 8px;">表（商材×オファー サマリー）</h3>
+      <div class="controls">
+        <button class="btn small" id="ltvReportTableCopyBtn">📋 表をコピー（タブ区切り）</button>
+        <span class="n" id="ltvReportTableCopyStatus"></span>
+      </div>
+      <div class="table-wrap"><table class="data" id="ltvReportSummaryTable"></table></div>
+
+      <h3 style="font-size:12.5px;color:var(--text-dim);margin:16px 0 8px;">表（代理店/ASP別 内訳）</h3>
+      <div class="controls">
+        <button class="btn small" id="ltvReportAgencyTableCopyBtn">📋 表をコピー（タブ区切り）</button>
+        <span class="n" id="ltvReportAgencyTableCopyStatus"></span>
+      </div>
+      <div class="table-wrap"><table class="data" id="ltvReportAgencyTable"></table></div>
+
+      <h3 style="font-size:12.5px;color:var(--text-dim);margin:16px 0 8px;">テキスト</h3>
+      <div class="controls">
+        <button class="btn primary" id="ltvReportCopyBtn">📋 コピー</button>
+        <span class="n" id="ltvReportCopyStatus"></span>
+      </div>
+      <textarea id="ltvReportTextArea" readonly rows="20" style="width:100%;background:var(--bg-panel-2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:12px;font-family:var(--mono);font-size:13px;resize:vertical;line-height:1.7;"></textarea>
     </div>
   </section>
 
@@ -676,48 +717,6 @@
       </div>
     </div>
 
-    <div class="panel">
-      <h2>レポート書き出し<span class="n">（商材×オファーごと・ドキュメント貼り付け用）</span></h2>
-      <div class="note-box">
-        対象月時点の件数（進捗・着地見込み）・売上・利益・稼働している代理店/ASPとその広告費・CPAを、商材×オファーごとにまとめて書き出します。表は「表をコピー」でタブ区切りとしてコピーされるので、Excel・Googleスプレッドシート・Word・Googleドキュメントの表にそのまま貼り付けられます。グラフは画像なので、右クリック（またはドラッグ）でドキュメントに貼り付けられます。
-      </div>
-      <div class="controls">
-        <label>対象月 <input type="month" id="ltvReportMonthInput"></label>
-        <button class="btn primary" id="ltvReportWordDownloadBtn">📄 Wordでダウンロード</button>
-        <span class="n" id="ltvReportWordDownloadStatus"></span>
-      </div>
-
-      <h3 style="font-size:12.5px;color:var(--text-dim);margin:16px 0 8px;">出力するオファーを選択<span class="n">（デフォルトは進捗1件以上のオファーのみ）</span></h3>
-      <div class="controls" style="margin-bottom:8px;">
-        <button class="btn small" id="ltvReportSelectAllBtn">すべて選択</button>
-        <button class="btn small" id="ltvReportSelectNoneBtn">すべて解除</button>
-      </div>
-      <div id="ltvReportOfferCheckboxes" style="display:flex;flex-wrap:wrap;gap:8px 16px;margin-bottom:12px;"></div>
-
-      <h3 style="font-size:12.5px;color:var(--text-dim);margin:16px 0 8px;">グラフ（商材×オファー別 売上・利益）</h3>
-      <div style="overflow-x:auto;"><canvas id="ltvReportChart"></canvas></div>
-
-      <h3 style="font-size:12.5px;color:var(--text-dim);margin:16px 0 8px;">表（商材×オファー サマリー）</h3>
-      <div class="controls">
-        <button class="btn small" id="ltvReportTableCopyBtn">📋 表をコピー（タブ区切り）</button>
-        <span class="n" id="ltvReportTableCopyStatus"></span>
-      </div>
-      <div class="table-wrap"><table class="data" id="ltvReportSummaryTable"></table></div>
-
-      <h3 style="font-size:12.5px;color:var(--text-dim);margin:16px 0 8px;">表（代理店/ASP別 内訳）</h3>
-      <div class="controls">
-        <button class="btn small" id="ltvReportAgencyTableCopyBtn">📋 表をコピー（タブ区切り）</button>
-        <span class="n" id="ltvReportAgencyTableCopyStatus"></span>
-      </div>
-      <div class="table-wrap"><table class="data" id="ltvReportAgencyTable"></table></div>
-
-      <h3 style="font-size:12.5px;color:var(--text-dim);margin:16px 0 8px;">テキスト</h3>
-      <div class="controls">
-        <button class="btn primary" id="ltvReportCopyBtn">📋 コピー</button>
-        <span class="n" id="ltvReportCopyStatus"></span>
-      </div>
-      <textarea id="ltvReportTextArea" readonly rows="20" style="width:100%;background:var(--bg-panel-2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:12px;font-family:var(--mono);font-size:13px;resize:vertical;line-height:1.7;"></textarea>
-    </div>
   </section>
 
   <!-- COST SETTINGS -->
@@ -813,59 +812,9 @@
     </div>
   </section>
 
-  <!-- PROGRESS (旧: 年間計画) -->
-  <section id="tab-annualplan" style="display:none;">
-    <div class="note-box"><strong>🚧 準備中：</strong>実データとどれくらい合っているか検証中のタブです。数値はまだ参考値としてご覧ください。<br>
-      商材ごとに「定期顧客数 = 前月の定期顧客数 ×（1-解約率）＋ 当月の新規獲得件数」「売上 = 定期顧客数 × 売上単価」で月次を積み上げます。<strong>実績入力の最終月</strong>までは下の表に直接、定期顧客数・解約率・売上単価・売上・コストを入力してください（新規獲得件数だけは受注実績／予算管理タブの上限件数から自動で入ります／「すべて」表示中は編集できません。商材タブを選んでください）。それより先の月は上記の式と「実績入力の最終月のコスト÷売上比率」で自動的に予測します（表内で<span style="font-style:italic;">斜体</span>になっている行が予測分）。広告費は当月かかった分を当月・翌月・翌々月の3ヶ月に按分して計上します（当月分は日割りの着地見込みなので、月内の新規増減がそのまま反映されます）。毎月、実績入力の最終月を1ヶ月ずつ進めていくことで、予測が最新の実績に更新されていきます。
-    </div>
-    <div class="controls">
-      <label>表示開始月 <input type="month" id="apStartMonthInput"></label>
-      <label>実績入力の最終月 <input type="month" id="apActualThroughInput"></label>
-    </div>
-    <div class="cat-tabs" id="apCatTabs"></div>
-    <div class="grid-kpi" id="apSummaryKpis"></div>
-    <div class="grid-kpi" id="apAchieveKpis" style="margin-top:-8px;"></div>
-    <div class="panel">
-      <h2>月次進捗<span class="n">（24ヶ月分／年月ごとに1行、入力欄は実績入力の最終月まで）</span></h2>
-      <div class="table-wrap"><table class="data" id="apPlanTable"></table></div>
-    </div>
-  </section>
-
-  <!-- TARGET MIN -->
-  <section id="tab-targetmin" style="display:none;">
-    <div class="note-box"><strong>🚧 準備中：</strong>まだ調整中のタブです。<br>
-      商材・月ごとの目標値（MINケース）を数字のまま固定で記録しておく表です。計算は一切行わず、入力した値がそのまま保存されます（「すべて」表示中は編集できません。商材タブを選んでください）。
-    </div>
-    <div class="controls">
-      <label>表示開始月 <input type="month" id="targetMinStartMonthInput"></label>
-    </div>
-    <div class="cat-tabs" id="targetMinCatTabs"></div>
-    <div class="grid-kpi" id="targetMinKpis"></div>
-    <div class="panel">
-      <h2>目標(MIN)<span class="n">（24ヶ月分／年月ごとに1行）</span></h2>
-      <div class="table-wrap"><table class="data" id="targetMinTable"></table></div>
-    </div>
-  </section>
-
-  <!-- TARGET MAX -->
-  <section id="tab-targetmax" style="display:none;">
-    <div class="note-box"><strong>🚧 準備中：</strong>まだ調整中のタブです。<br>
-      商材・月ごとの目標値（MAXケース）を数字のまま固定で記録しておく表です。計算は一切行わず、入力した値がそのまま保存されます（「すべて」表示中は編集できません。商材タブを選んでください）。
-    </div>
-    <div class="controls">
-      <label>表示開始月 <input type="month" id="targetMaxStartMonthInput"></label>
-    </div>
-    <div class="cat-tabs" id="targetMaxCatTabs"></div>
-    <div class="grid-kpi" id="targetMaxKpis"></div>
-    <div class="panel">
-      <h2>目標(MAX)<span class="n">（24ヶ月分／年月ごとに1行）</span></h2>
-      <div class="table-wrap"><table class="data" id="targetMaxTable"></table></div>
-    </div>
-  </section>
-
   <!-- INVOICES -->
   <section id="tab-invoices" style="display:none;">
-    <div class="note-box"><strong>🚧 準備中：</strong>まだ調整中のタブです。読み取り精度や項目が変わる可能性があります。<br>
+    <div class="note-box">
       PDFを選択すると、テキストを自動解析して「取引先・対象年月・金額・分類」を仮入力します。ファイル名が「会社名_YYYYMM」の形式になっている場合はそちらを優先します。請求書のフォーマットは発行元によって異なるため、<strong>必ず内容を確認してから保存してください</strong>。取引先名・分類を手直しして保存すると、次回以降は同じ発行元のPDFで自動的に使われるようになります（LAMP・OTONARI・ソッキン・ツナグ・フルスピード・ベルウェール・ラヴィリ・リッツ・レゴーズは初期ルールとして登録済みです。学習内容は他の端末とも共有されます）。<br>
       金額は基本的に<strong>税抜き</strong>で読み取ります（内税表示しかない場合は自動で税抜きに換算します）。<br>
       請求書は基本的にまるごと1つの分類（原価／固定費・変動費／広告費）に振り分けますが、<strong>SUPER STUDIO・共栄物流</strong>の請求書、または「ラグネット」関連の項目とそれ以外が混在していると判断できた請求書（レゴーズのように複数ブランド分がまとまっている場合など）は、品目ごとに分解して仮入力します。ラグネット関連と判断できた項目は自動でチェックが入り、それ以外は<strong>未チェックのまま</strong>になります（チェックを入れたものだけ保存されます）。各項目は「商材」欄で該当する商材（練り香水・バブルスクラブ等、実在するデータから選べます）を、「分類」欄で分類を個別に指定できます（未指定の項目は全体設定の分類を引き継ぎます）。<br>
@@ -1110,7 +1059,7 @@
 (function(){
   "use strict";
 
-  const APP_VERSION = "4.51.0";
+  const APP_VERSION = "4.52.0";
 
   // ---------- display preferences (local to this device only, not synced) ----------
   const THEME_KEY = 'lagnet_theme_v1';
@@ -2225,6 +2174,7 @@
   let dashboardPeriodKey = 'thismonth';
   let summaryPeriodKey = 'thismonth';
   let reportPeriodKey = 'thismonth';
+  let reportExportState = null; // 直近の「商材別 報告テキスト」描画内容（Wordダウンロード用にそのまま再利用する）
   let trendPeriodKey = 'thismonth';
   let ltvSelectedCategory = null; // null = not yet initialized (defaults to first category); '' = explicitly "すべて" (all categories combined)
   // 継続率入力欄は値を確定すると表全体が再描画されてDOMが作り直されるため、その
@@ -4822,26 +4772,35 @@
     const REPORT_CATEGORY_ORDER = ['練り香水', 'スクラブ', 'ヘッドスクラブ', 'サプリ', 'ゼノス'];
     const categories = REPORT_CATEGORY_ORDER.filter(c => allCategories.includes(c));
 
-    const lines = [];
-    categories.forEach(cat=>{
+    const catData = categories.map(cat=>{
       const catRecords = filtered.filter(r=>r.category===cat);
       const count = catRecords.length;
       const cost = costForRecordsInWindow(catRecords, from, to, cat);
       const cpa = cost>0 && count>0 ? cost/count : null;
-      lines.push(`＜${cat}＞`);
-      lines.push(`件数：${fmtNum(count)}`);
-      lines.push(`広告費：${cost>0?fmtYen(cost):'¥0'}`);
-      lines.push(`CPA：${cpa!=null?fmtYen(cpa):'—'}`);
       const catSplit = computeLandingSplit(cat);
       const catLandingInfo = computeLanding(cat);
       const catLtv = simulateLTV(cat, catSplit.frontLanding, catSplit.upsellLanding, catLandingInfo.landingCost);
-      lines.push(`2年間売上：${catLtv.totalRevenue>0?fmtYen(catLtv.totalRevenue):''}`);
-      lines.push(`2年間利益：${catLtv.totalRevenue>0?fmtYen(catLtv.totalProfit):''}`);
+      return { cat, count, cost, cpa, revenue: catLtv.totalRevenue, profit: catLtv.totalProfit };
+    });
+
+    const lines = [];
+    catData.forEach(d=>{
+      lines.push(`＜${d.cat}＞`);
+      lines.push(`件数：${fmtNum(d.count)}`);
+      lines.push(`広告費：${d.cost>0?fmtYen(d.cost):'¥0'}`);
+      lines.push(`CPA：${d.cpa!=null?fmtYen(d.cpa):'—'}`);
+      lines.push(`2年間売上：${d.revenue>0?fmtYen(d.revenue):''}`);
+      lines.push(`2年間利益：${d.revenue>0?fmtYen(d.profit):''}`);
       lines.push('');
     });
     lines.push('※全商材');
 
     document.getElementById('reportTextArea').value = lines.join('\n');
+
+    // Word書き出しボタン用に、今表示中の内容をそのまま覚えておく。
+    reportExportState = { from, to, catData };
+    const reportWordBtn = document.getElementById('reportWordDownloadBtn');
+    if (reportWordBtn) reportWordBtn.onclick = exportSimpleReportToWord;
   }
 
   // ---------- 収益シミュレーション：レポート書き出し（商材×オファーごと） ----------
@@ -5029,14 +4988,44 @@
     for (let i=0; i<binary.length; i++) bytes[i] = binary.charCodeAt(i);
     return bytes;
   }
-  // 今画面に表示している収益シミュレーションレポート（グラフ・表）を、そのまま
-  // Wordファイル（.docx）としてダウンロードする。docx（ブラウザ用IIFEビルド）を
-  // CDNから読み込んで使う。ネットワークに一切送信せず、ブラウザ内で.docxの
-  // バイナリを組み立ててそのままダウンロードする。
-  async function exportLtvReportToWord(){
-    const state = ltvReportExportState;
-    const statusEl = document.getElementById('ltvReportWordDownloadStatus');
-    if (!state){ return; }
+  // ---- Word（.docx）書き出しの共通部品 ----
+  // docx（ブラウザ用IIFEビルド、CDNから読み込み）を使ってブラウザ内だけで
+  // .docxのバイナリを組み立てる。ネットワークには一切送信しない。
+  const DOCX_FONT = 'M PLUS 2';
+  const DOCX_HEAD_SHADE = 'EFE6D8';
+  const DOCX_TOTAL_SHADE = 'F0C480';
+  const DOCX_USABLE_WIDTH = 11000; // 縦向きLetterでの使用可能幅の目安（ページ幅12240 - 左右余白620x2）
+  function docxHeaderCell(text, width){
+    const { Paragraph, TextRun, TableCell, WidthType, ShadingType } = window.docx;
+    return new TableCell({
+      width: { size: width, type: WidthType.DXA },
+      shading: { type: ShadingType.CLEAR, fill: DOCX_HEAD_SHADE },
+      children: [new Paragraph({ children: [new TextRun({ text, bold: true, size: 19, font: DOCX_FONT })] })]
+    });
+  }
+  function docxDataCell(text, width, alignRight, opts){
+    opts = opts || {};
+    const { Paragraph, TextRun, TableCell, WidthType, ShadingType, AlignmentType } = window.docx;
+    return new TableCell({
+      width: { size: width, type: WidthType.DXA },
+      shading: opts.shade ? { type: ShadingType.CLEAR, fill: opts.shade } : undefined,
+      children: [new Paragraph({ alignment: alignRight ? AlignmentType.RIGHT : AlignmentType.LEFT, children: [new TextRun({ text: String(text), bold: !!opts.bold, size: 19, font: DOCX_FONT })] })]
+    });
+  }
+  function docxBuildTable(headers, rows, widths, numericStartIndex, totalRow){
+    const { Table, TableRow, WidthType } = window.docx;
+    const dataRows = rows.map(r => new TableRow({ children: r.map((c,i)=> docxDataCell(c, widths[i], i>=numericStartIndex)) }));
+    const totalRowEl = totalRow ? new TableRow({ children: totalRow.map((c,i)=> docxDataCell(c, widths[i], i>=numericStartIndex, { bold:true, shade: DOCX_TOTAL_SHADE })) }) : null;
+    return new Table({
+      width: { size: DOCX_USABLE_WIDTH, type: WidthType.DXA },
+      columnWidths: widths,
+      rows: [ new TableRow({ children: headers.map((h,i)=>docxHeaderCell(h, widths[i])) }), ...(totalRowEl?[totalRowEl]:[]), ...dataRows ]
+    });
+  }
+  // Documentを組み立てて.docxとしてダウンロードする共通処理。statusElIdがあれば
+  // 作成中・完了・失敗を一時的に表示する。
+  async function downloadDocx(children, filename, statusElId){
+    const statusEl = statusElId ? document.getElementById(statusElId) : null;
     if (!window.docx){
       if (statusEl) statusEl.textContent = 'ライブラリの読み込みに失敗しました';
       alert('Word書き出しライブラリの読み込みに失敗しました（オフラインの場合は書き出せません）。');
@@ -5044,75 +5033,9 @@
     }
     if (statusEl) statusEl.textContent = '作成中…';
     try{
-      const { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType, ShadingType, ImageRun, AlignmentType, PageOrientation } = window.docx;
-      const FONT = 'M PLUS 2';
-      const HEAD_SHADE = 'EFE6D8';
-      const TOTAL_SHADE = 'F0C480';
-      const USABLE_WIDTH = 11000; // 縦向きLetterでの使用可能幅の目安（ページ幅12240 - 左右余白620x2）
-
-      function headerCell(text, width){
-        return new TableCell({
-          width: { size: width, type: WidthType.DXA },
-          shading: { type: ShadingType.CLEAR, fill: HEAD_SHADE },
-          children: [new Paragraph({ children: [new TextRun({ text, bold: true, size: 19, font: FONT })] })]
-        });
-      }
-      function dataCell(text, width, alignRight, opts){
-        opts = opts || {};
-        return new TableCell({
-          width: { size: width, type: WidthType.DXA },
-          shading: opts.shade ? { type: ShadingType.CLEAR, fill: opts.shade } : undefined,
-          children: [new Paragraph({ alignment: alignRight ? AlignmentType.RIGHT : AlignmentType.LEFT, children: [new TextRun({ text: String(text), bold: !!opts.bold, size: 19, font: FONT })] })]
-        });
-      }
-      function buildTable(headers, rows, widths, numericStartIndex, totalRow){
-        const dataRows = rows.map(r => new TableRow({ children: r.map((c,i)=> dataCell(c, widths[i], i>=numericStartIndex)) }));
-        const totalRowEl = totalRow ? new TableRow({ children: totalRow.map((c,i)=> dataCell(c, widths[i], i>=numericStartIndex, { bold:true, shade: TOTAL_SHADE })) }) : null;
-        return new Table({
-          width: { size: USABLE_WIDTH, type: WidthType.DXA },
-          columnWidths: widths,
-          rows: [ new TableRow({ children: headers.map((h,i)=>headerCell(h, widths[i])) }), ...(totalRowEl?[totalRowEl]:[]), ...dataRows ]
-        });
-      }
-
-      const canvas = document.getElementById('ltvReportChart');
-      const dpr = window.devicePixelRatio || 1;
-      const imgBytes = dataUrlToUint8Array(canvas.toDataURL('image/png'));
-      const dims = { width: canvas.width / dpr, height: canvas.height / dpr };
-      const maxW = 700;
-      const scale = Math.min(1, maxW / dims.width);
-
-      const rows = state.rows;
-      const summaryHeaders = ['商材','オファー','件数','着地見込み','売上','利益','代理店数','CPA'];
-      const summaryWidths = [1500, 1600, 1000, 1200, 1600, 1400, 1000, 1900];
-      const summaryTotalRow = ['合計', '—', fmtNum(state.totalProgress), fmtNum(state.totalLanding), fmtYen(state.totalRevenue), fmtYen(state.totalProfit), fmtNum(state.totalAgencyCount), state.totalCpa!=null?fmtYen(state.totalCpa):'—'];
-      const summaryDataRows = rows.map(r=>[
-        r.category, r.offer||'その他', fmtNum(Math.round(r.progressCount)), fmtNum(Math.round(r.landingCount)),
-        fmtYen(r.revenue), fmtYen(r.profit), fmtNum(r.agencyRows.length), r.overallCpa!=null?fmtYen(r.overallCpa):'—'
-      ]);
-
-      const agencyWidths = [1300, 1500, 3800, 900, 1900, 1600];
-      const agencyDataRows = [];
-      rows.forEach(r=>{
-        r.agencyRows.forEach(a=>{
-          agencyDataRows.push([r.category, r.offer||'その他', a.agency, fmtNum(a.count), fmtYen(a.cost), a.cpa!=null?fmtYen(a.cpa):'—']);
-        });
-      });
-
-      const children = [
-        new Paragraph({ children:[new TextRun({ text:'LAGNET 収益シミュレーション レポート', bold:true, size:40, font:FONT })] }),
-        new Paragraph({ children:[new TextRun({ text:`対象月：${state.monthKey}`, size:20, color:'666666', font:FONT })] }),
-        new Paragraph({ text:'' }),
-        new Paragraph({ text:'グラフ（商材×オファー別 獲得件数・売上・利益／獲得が多い順）', heading: HeadingLevel.HEADING_2 }),
-        new Paragraph({ children:[ new ImageRun({ type:'png', data: imgBytes, transformation:{ width: Math.round(dims.width*scale), height: Math.round(dims.height*scale) } }) ] }),
-        new Paragraph({ text:'表（商材×オファー サマリー）', heading: HeadingLevel.HEADING_2, spacing:{ before:200 } }),
-        buildTable(summaryHeaders, summaryDataRows, summaryWidths, 2, rows.length ? summaryTotalRow : null),
-        new Paragraph({ text:'表（代理店/ASP別 内訳）', heading: HeadingLevel.HEADING_2, spacing:{ before:200 } }),
-        buildTable(['商材','オファー','代理店/ASP','件数','広告費','CPA'], agencyDataRows, agencyWidths, 3)
-      ];
-
+      const { Document, Packer, PageOrientation } = window.docx;
       const doc = new Document({
-        styles: { default: { document: { run: { font: FONT } } } },
+        styles: { default: { document: { run: { font: DOCX_FONT } } } },
         sections: [{
           properties: { page: { size:{ width:12240, height:15840, orientation: PageOrientation.PORTRAIT }, margin:{ top:720, bottom:720, left:620, right:620 } } },
           children
@@ -5122,7 +5045,7 @@
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `LAGNET収益シミュレーションレポート_${state.monthKey}.docx`;
+      a.download = filename;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -5134,6 +5057,71 @@
       return;
     }
     setTimeout(()=>{ if (statusEl) statusEl.textContent = ''; }, 3000);
+  }
+  // 今画面に表示している収益シミュレーションレポート（グラフ・表）を、そのまま
+  // Wordファイル（.docx）としてダウンロードする。
+  async function exportLtvReportToWord(){
+    const state = ltvReportExportState;
+    if (!state) return;
+    const { HeadingLevel, ImageRun } = window.docx || {};
+    const canvas = document.getElementById('ltvReportChart');
+    const dpr = window.devicePixelRatio || 1;
+    const imgBytes = dataUrlToUint8Array(canvas.toDataURL('image/png'));
+    const dims = { width: canvas.width / dpr, height: canvas.height / dpr };
+    const maxW = 700;
+    const scale = Math.min(1, maxW / dims.width);
+
+    const rows = state.rows;
+    const summaryHeaders = ['商材','オファー','件数','着地見込み','売上','利益','代理店数','CPA'];
+    const summaryWidths = [1500, 1600, 1000, 1200, 1600, 1400, 1000, 1900];
+    const summaryTotalRow = ['合計', '—', fmtNum(state.totalProgress), fmtNum(state.totalLanding), fmtYen(state.totalRevenue), fmtYen(state.totalProfit), fmtNum(state.totalAgencyCount), state.totalCpa!=null?fmtYen(state.totalCpa):'—'];
+    const summaryDataRows = rows.map(r=>[
+      r.category, r.offer||'その他', fmtNum(Math.round(r.progressCount)), fmtNum(Math.round(r.landingCount)),
+      fmtYen(r.revenue), fmtYen(r.profit), fmtNum(r.agencyRows.length), r.overallCpa!=null?fmtYen(r.overallCpa):'—'
+    ]);
+
+    const agencyWidths = [1300, 1500, 3800, 900, 1900, 1600];
+    const agencyDataRows = [];
+    rows.forEach(r=>{
+      r.agencyRows.forEach(a=>{
+        agencyDataRows.push([r.category, r.offer||'その他', a.agency, fmtNum(a.count), fmtYen(a.cost), a.cpa!=null?fmtYen(a.cpa):'—']);
+      });
+    });
+
+    const { Paragraph, TextRun } = window.docx;
+    const children = [
+      new Paragraph({ children:[new TextRun({ text:'LAGNET 収益シミュレーション レポート', bold:true, size:40, font:DOCX_FONT })] }),
+      new Paragraph({ children:[new TextRun({ text:`対象月：${state.monthKey}`, size:20, color:'666666', font:DOCX_FONT })] }),
+      new Paragraph({ text:'' }),
+      new Paragraph({ text:'グラフ（商材×オファー別 獲得件数・売上・利益／獲得が多い順）', heading: HeadingLevel.HEADING_2 }),
+      new Paragraph({ children:[ new ImageRun({ type:'png', data: imgBytes, transformation:{ width: Math.round(dims.width*scale), height: Math.round(dims.height*scale) } }) ] }),
+      new Paragraph({ text:'表（商材×オファー サマリー）', heading: HeadingLevel.HEADING_2, spacing:{ before:200 } }),
+      docxBuildTable(summaryHeaders, summaryDataRows, summaryWidths, 2, rows.length ? summaryTotalRow : null),
+      new Paragraph({ text:'表（代理店/ASP別 内訳）', heading: HeadingLevel.HEADING_2, spacing:{ before:200 } }),
+      docxBuildTable(['商材','オファー','代理店/ASP','件数','広告費','CPA'], agencyDataRows, agencyWidths, 3)
+    ];
+    await downloadDocx(children, `LAGNET収益シミュレーションレポート_${state.monthKey}.docx`, 'ltvReportWordDownloadStatus');
+  }
+  // 「商材別 報告テキスト」の内容を、そのままWordファイル（.docx）としてダウンロードする。
+  async function exportSimpleReportToWord(){
+    const state = reportExportState;
+    if (!state) return;
+    const { Paragraph, TextRun, HeadingLevel } = window.docx || {};
+    const rangeLabel = `${state.from||'全期間'} 〜 ${state.to||'現在'}`;
+    const widths = [2600, 1800, 2600, 2000, 2000];
+    const headers = ['商材','件数','広告費','CPA','2年間売上/利益'];
+    const dataRows = state.catData.map(d=>[
+      d.cat, fmtNum(d.count), d.cost>0?fmtYen(d.cost):'¥0', d.cpa!=null?fmtYen(d.cpa):'—',
+      d.revenue>0?`${fmtYen(d.revenue)} / ${fmtYen(d.profit)}`:'—'
+    ]);
+    const children = [
+      new Paragraph({ children:[new TextRun({ text:'LAGNET 商材別 報告', bold:true, size:40, font:DOCX_FONT })] }),
+      new Paragraph({ children:[new TextRun({ text:`対象期間：${rangeLabel}`, size:20, color:'666666', font:DOCX_FONT })] }),
+      new Paragraph({ text:'' }),
+      new Paragraph({ text:'商材別サマリー', heading: HeadingLevel.HEADING_2 }),
+      docxBuildTable(headers, dataRows, widths, 1, null)
+    ];
+    await downloadDocx(children, `LAGNET商材別報告_${state.to||currentMonthKey()}.docx`, 'reportCopyStatus');
   }
 
   function renderLtvReport(){
@@ -8573,9 +8561,6 @@
     renderReport();
     renderCostTab();
     renderBudgetTab();
-    renderProgressTab();
-    renderTargetMinTab();
-    renderTargetMaxTab();
     renderInvoicesTab();
     renderMallFeeTab();
     renderHistory();
@@ -8588,7 +8573,7 @@
     btn.addEventListener('click', ()=>{
       document.querySelectorAll('nav.tabs button').forEach(b=>b.classList.remove('active'));
       btn.classList.add('active');
-      ['dashboard','summary','trend','media','ltv','cost','budget','annualplan','targetmin','targetmax','invoices','mallfee','demographics','report','manage'].forEach(t=>{
+      ['dashboard','summary','trend','media','ltv','cost','budget','invoices','mallfee','demographics','report','manage'].forEach(t=>{
         document.getElementById('tab-'+t).style.display = (t===btn.dataset.tab) ? '' : 'none';
       });
       renderAll();
